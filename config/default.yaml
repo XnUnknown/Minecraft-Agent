@@ -1,0 +1,16 @@
+# Stage 1 config — server connection + agent identity.
+# Edit these to match your local server.
+
+server:
+  host: 127.0.0.1        # localhost — agent runs on the same PC as the server
+  port: 25565            # default Minecraft Java port
+  auth: offline          # "offline" if your server is offline-mode, else "microsoft"
+  version: ""            # "" = auto-detect (recommended). Or pin e.g. "1.21.1"
+
+agent:
+  username: Steve_AI     # the bot's in-game name
+  brain: brains/default  # portable brain folder (used from Stage 9)
+
+conversation:
+  maxMessages: 16        # compact the chat history once it exceeds this many messages
+  keepRecent: 6          # messages kept verbatim after compaction (older ones -> summary)

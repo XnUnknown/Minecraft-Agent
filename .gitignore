@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.env
+*.log
+
+# Bundled Minecraft server (large jars + world data + keys) — not part of the agent codebase
+Minecraft Agent Server/
+Minecraft Agent Servers/
+*.jar
+
+# Local Claude Code settings
+.claude/settings.local.json
+
+# Portable brain runtime data (keep folder structure, ignore heavy/generated bits)
+brains/*/logs/
+brains/*/memory/vectors/

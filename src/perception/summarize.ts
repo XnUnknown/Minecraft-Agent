@@ -1,4 +1,4 @@
-import type { PerceivedEntity, WorldState } from './types';
+import type { NearbyBlock, PerceivedEntity, WorldState } from './types';
 import { round } from '../util/geometry';
 
 /**
@@ -7,7 +7,10 @@ import { round } from '../util/geometry';
  * distant (>32m) is counted by direction. Keeps prompts small regardless of how much
  * the bot can see.
  */
-export function summarizeWorldState(ws: WorldState): string {
+export function summarizeWorldState(
+  ws: WorldState,
+  blocks?: { interesting: NearbyBlock[]; terrain: string[] },
+): string {
   const s = ws.self;
   const env = ws.environment;
   const lines: string[] = [];
@@ -54,6 +57,16 @@ export function summarizeWorldState(ws: WorldState): string {
       ws.inventory.length ? ws.inventory.map((i) => `${i.count}x ${i.name}`).slice(0, 12).join(', ') : 'empty'
     }`,
   );
+
+  if (blocks?.interesting.length) {
+    lines.push(
+      `Notable blocks within 16m (use these EXACT names for collectBlock): ` +
+        blocks.interesting.map((b) => `${b.name} x${b.count} (${round(b.distance)}m ${b.direction})`).join(', '),
+    );
+  }
+  if (blocks?.terrain.length) {
+    lines.push(`Terrain underfoot/around: ${blocks.terrain.join(', ')}`);
+  }
 
   return lines.join('\n');
 }

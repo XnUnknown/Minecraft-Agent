@@ -51,3 +51,11 @@ export interface WorldState {
   entities: PerceivedEntity[];
   environment: EnvironmentState;
 }
+
+/** A distinct non-terrain block type spotted nearby, e.g. a specific ore or wood variant. */
+export interface NearbyBlock {
+  name: string;
+  count: number;
+  distance: number;
+  direction: string;
+}

@@ -55,6 +55,21 @@ export class GoalRunner {
       return;
     }
 
+    // Asking for the same thing again while it's already running/queued isn't a new task —
+    // it's almost always "are you still on this?". Answer with live status instead of
+    // silently re-running (or stacking a duplicate behind) the same job.
+    if (intent === 'task') {
+      const norm = normalize(message);
+      if (this.current && normalize(this.current.task.message) === norm) {
+        bot.chat(this.describeActivity(bot));
+        return;
+      }
+      if (this.queue.some((t) => normalize(t.message) === norm)) {
+        bot.chat(`That's already queued up — ${this.describeActivity(bot)}`);
+        return;
+      }
+    }
+
     const task: Task = { requestedBy: username, message };
     if (intent === 'now') {
       // Pre-empt: drop the current task and jump the queue.
@@ -177,15 +192,26 @@ export class GoalRunner {
       assistantRecord = say;
     } else {
       if (plan.length > 1) logger.info(`Executing ${plan.length}-step plan for "${task.message}".`);
+      // sayInChat/reportStatus already speak for themselves; everything else (collectBlock,
+      // tossItem, attackNearestMob, ...) only returns a result string that used to go
+      // straight into memory and nowhere else — the bot would work in total silence. Collect
+      // those results and speak them as a wrap-up unless the plan already spoke on its own.
+      const resultsForChat: string[] = [];
+      const willSpeak = plan.some((p) => p.name === 'sayInChat');
       for (let i = 0; i < plan.length; i++) {
         if (this.cancel) {
           assistantRecord += '(cancelled) ';
+          resultsForChat.push('(cancelled)');
           break;
         }
         const step = plan[i];
         if (this.current) this.current.step = `step ${i + 1}/${plan.length}: ${step.name}`;
         const result = await this.skills.execute(bot, step.name, step.args, ctx);
         assistantRecord += `${describeAction(step.name, step.args, result)} `;
+        if (step.name !== 'sayInChat' && step.name !== 'reportStatus') resultsForChat.push(result);
+      }
+      if (!willSpeak && resultsForChat.length) {
+        bot.chat(resultsForChat.join(' ').slice(0, 300));
       }
     }
 
@@ -213,6 +239,11 @@ function classifyIntent(message: string): 'stop' | 'status' | 'now' | 'task' {
     return 'status';
   if (/\b(right now|do it now|stop and|immediately|drop everything|urgent)\b/.test(m)) return 'now';
   return 'task';
+}
+
+/** Loose equality for "is this the same request as last time" checks. */
+function normalize(message: string): string {
+  return message.trim().toLowerCase().replace(/[!?.]+$/g, '').replace(/\s+/g, ' ');
 }
 
 function withSummary(system: string, summary: string): string {

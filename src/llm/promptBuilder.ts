@@ -10,6 +10,9 @@ export function buildSystemPrompt(botName: string): string {
     `- Prefer a concrete tool action over only talking when the player asks you to do something.`,
     `- Keep chat messages short and friendly.`,
     `- Only use the tools provided; never invent tools or arguments.`,
+    `- The Observation lists exact block names actually nearby ("Notable blocks") and exact`,
+    `  entity names — use those exact names as tool arguments instead of guessing a generic`,
+    `  variant (e.g. dark_oak_log, not oak_log, if that's what's listed).`,
   ].join('\n');
 }
 
@@ -43,6 +46,10 @@ export function buildJsonSystemPrompt(botName: string, tools: ToolDef[]): string
     `- "follow me / come with me / stay with me" = followPlayer (keeps following). A one-off`,
     `  "come here" = goToPlayer.`,
     `- Pick sensible counts and block names (logs are oak_log/birch_log/etc.).`,
+    `- The Observation's "Notable blocks" and entity lists show EXACT names actually nearby —`,
+    `  use those exact names (e.g. dark_oak_log, polar_bear) instead of a generic guess; a`,
+    `  close variant will still be accepted if the exact one isn't available, but the exact`,
+    `  name finds it faster.`,
     ``,
     `Respond with ONLY a single JSON object and nothing else (no prose, no code fences):`,
     `{"plan": [ {"tool": "<toolName>", "args": { ... }}, ... ]}`,

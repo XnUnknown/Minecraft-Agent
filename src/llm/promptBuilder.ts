@@ -26,44 +26,99 @@ export function buildJsonSystemPrompt(botName: string, tools: ToolDef[]): string
 
   return [
     `You are ${botName}, an autonomous agent in a Minecraft world (survival mode).`,
-    `You are given an observation and a player's message. Choose exactly ONE action.`,
+    `You are given an observation and a player's message. Produce an ordered PLAN of tool`,
+    `calls that, run one after another, FULLY accomplish what the player asked — think the`,
+    `whole job through, not just the first step.`,
     ``,
     `Available tools:`,
     catalog,
     ``,
+    `Planning rules:`,
+    `- The player talking to you is named in 'Player "NAME" says'. Use that exact NAME for`,
+    `  playerName / who to deliver to.`,
+    `- "bring/get/fetch me X" means: gather X, THEN goToPlayer(NAME), THEN tossItem(X). Never`,
+    `  stop after gathering — always return and hand it over.`,
+    `- A request can be several tasks ("get wood and then kill 2 zombies"): include EVERY task`,
+    `  as steps, in the order asked.`,
+    `- "follow me / come with me / stay with me" = followPlayer (keeps following). A one-off`,
+    `  "come here" = goToPlayer.`,
+    `- Pick sensible counts and block names (logs are oak_log/birch_log/etc.).`,
+    ``,
     `Respond with ONLY a single JSON object and nothing else (no prose, no code fences):`,
-    `{"tool": "<toolName>", "args": { ... }}`,
-    `For a conversational reply use: {"tool": "sayInChat", "args": {"message": "..."}}`,
+    `{"plan": [ {"tool": "<toolName>", "args": { ... }}, ... ]}`,
+    `Examples (player is "Nish"):`,
+    `- "bring me 10 oak logs and kill the monsters" ->`,
+    `  {"plan":[{"tool":"collectBlock","args":{"blockType":"oak_log","count":10}},` +
+      `{"tool":"goToPlayer","args":{"playerName":"Nish"}},` +
+      `{"tool":"tossItem","args":{"item":"oak_log"}},` +
+      `{"tool":"attackNearestMob","args":{"count":3}}]}`,
+    `- "follow me" -> {"plan":[{"tool":"followPlayer","args":{"playerName":"Nish"}}]}`,
+    `- a plain chat reply -> {"plan":[{"tool":"sayInChat","args":{"message":"..."}}]}`,
     `Arguments marked with * are required. Do not invent tools or arguments.`,
   ].join('\n');
 }
 
-/** Extracts a {"tool","args"} action from a JSON-mode model's text reply. */
-export function parseJsonToolCall(text: string): { name: string; args: Record<string, unknown> } | null {
-  if (!text) return null;
-  const cleaned = text.replace(/```(?:json)?/gi, '').trim();
-  const candidate = extractJsonObject(cleaned);
-  if (!candidate) return null;
-  try {
-    const obj = JSON.parse(candidate) as { tool?: unknown; args?: unknown };
-    if (obj && typeof obj.tool === 'string') {
-      const args = obj.args && typeof obj.args === 'object' ? (obj.args as Record<string, unknown>) : {};
-      return { name: obj.tool, args };
-    }
-  } catch {
-    /* fall through */
-  }
-  return null;
+export interface PlanStep {
+  name: string;
+  args: Record<string, unknown>;
 }
 
-/** Returns the first balanced {...} object substring, or null. */
-function extractJsonObject(s: string): string | null {
-  const start = s.indexOf('{');
+/** Extracts a {"tool","args"} action from a JSON-mode model's text reply. */
+export function parseJsonToolCall(text: string): PlanStep | null {
+  const steps = parseJsonPlan(text);
+  return steps[0] ?? null;
+}
+
+/**
+ * Extracts an ordered plan of tool calls from a JSON-mode model's reply. Accepts
+ * `{"plan":[...]}`, a bare `[...]` array, or a single `{"tool","args"}` object.
+ */
+export function parseJsonPlan(text: string): PlanStep[] {
+  if (!text) return [];
+  const cleaned = text.replace(/```(?:json)?/gi, '').trim();
+
+  const arrayText = cleaned[0] === '[' ? extractBalanced(cleaned, '[', ']') : null;
+  if (arrayText) {
+    try {
+      return toSteps(JSON.parse(arrayText));
+    } catch {
+      /* fall through to object parse */
+    }
+  }
+
+  const objText = extractBalanced(cleaned, '{', '}');
+  if (objText) {
+    try {
+      const obj = JSON.parse(objText) as { plan?: unknown; tool?: unknown; args?: unknown };
+      if (Array.isArray(obj.plan)) return toSteps(obj.plan);
+      if (typeof obj.tool === 'string') return toSteps([obj]);
+    } catch {
+      /* ignore */
+    }
+  }
+  return [];
+}
+
+function toSteps(arr: unknown): PlanStep[] {
+  if (!Array.isArray(arr)) return [];
+  const steps: PlanStep[] = [];
+  for (const raw of arr) {
+    const s = raw as { tool?: unknown; args?: unknown };
+    if (s && typeof s.tool === 'string') {
+      steps.push({ name: s.tool, args: s.args && typeof s.args === 'object' ? (s.args as Record<string, unknown>) : {} });
+    }
+  }
+  return steps;
+}
+
+/** Returns the first balanced open..close substring, or null. */
+function extractBalanced(s: string, open: string, close: string): string | null {
+  const start = s.indexOf(open);
   if (start === -1) return null;
   let depth = 0;
   for (let i = start; i < s.length; i++) {
-    if (s[i] === '{') depth++;
-    else if (s[i] === '}') {
+    if (s[i] === open) depth++;
+    else if (s[i] === close) {
       depth--;
       if (depth === 0) return s.slice(start, i + 1);
     }

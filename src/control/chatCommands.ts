@@ -2,27 +2,38 @@ import type { Bot } from 'mineflayer';
 // mineflayer-pathfinder is CommonJS; default-import then destructure (see bot/plugins.ts).
 import pathfinderPkg from 'mineflayer-pathfinder';
 import type { AppConfig } from '../config/loadConfig';
+import type { Perception } from '../perception/Perception';
+import type { ReflexLayer } from '../reflex/ReflexLayer';
 import { logger } from '../util/logger';
 import { GoalRunner } from '../agent/goalRunner';
 
-const { Movements, goals } = pathfinderPkg;
+const { goals } = pathfinderPkg;
 
-/** Hard-coded manual overrides (zero-cost, always available). */
-const MANUAL = new Set(['come', 'stop', 'pos']);
+/**
+ * Hard-coded manual overrides (zero-cost, always available). `obs` is a perception debug
+ * aid. Note: `stop` is intentionally NOT here — it's routed to the GoalRunner so it cancels
+ * the whole task queue + active gathering/combat, not just pathfinding.
+ */
+const MANUAL = new Set(['come', 'pos', 'obs']);
 
 /**
  * Stage 2: manual chat control (come / stop / pos).
  * Stage 3: any other chat text is routed to the LLM planner via GoalRunner.
+ * Stage 4: GoalRunner observes via the shared Perception/Blackboard; `obs` dumps it.
  */
-export function registerChatCommands(bot: Bot, config: AppConfig): void {
-  const runner = new GoalRunner({
+export function registerChatCommands(
+  bot: Bot,
+  config: AppConfig,
+  perception: Perception,
+  reflex: ReflexLayer,
+): void {
+  const runner = new GoalRunner(perception, reflex, {
     maxMessages: config.conversation.maxMessages,
     keepRecent: config.conversation.keepRecent,
   });
 
   bot.once('spawn', () => {
-    bot.pathfinder.setMovements(new Movements(bot));
-    logger.info('Pathfinder ready. Manual: come | stop | pos. Any other chat -> LLM.');
+    logger.info('Chat control ready. Manual: come | pos | obs. stop/status + any other chat -> agent.');
   });
 
   bot.on('chat', (username, message) => {
@@ -30,15 +41,21 @@ export function registerChatCommands(bot: Bot, config: AppConfig): void {
 
     const cmd = message.trim().toLowerCase();
     if (MANUAL.has(cmd)) {
-      handleManual(bot, username, cmd);
+      handleManual(bot, username, cmd, perception);
       return;
     }
     void runner.handle(bot, username, message);
   });
 }
 
-function handleManual(bot: Bot, username: string, cmd: string): void {
+function handleManual(bot: Bot, username: string, cmd: string, perception: Perception): void {
   switch (cmd) {
+    case 'obs': {
+      const observation = perception.observe();
+      logger.info(`OBSERVATION requested by ${username}:\n${observation}`);
+      bot.chat('Posted my current observation to the console.');
+      break;
+    }
     case 'come': {
       const target = bot.players[username]?.entity;
       if (!target) {

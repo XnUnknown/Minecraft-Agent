@@ -3,6 +3,10 @@ import type { AppConfig } from '../config/loadConfig';
 import { logger } from '../util/logger';
 import { loadPlugins } from './plugins';
 import { registerChatCommands } from '../control/chatCommands';
+import { Blackboard } from '../blackboard/Blackboard';
+import { Perception } from '../perception/Perception';
+import { ReflexLayer } from '../reflex/ReflexLayer';
+import { configureMovements, StuckMonitor } from './movement';
 
 /**
  * Create the Mineflayer bot, register plugins, wire chat commands and lifecycle events.
@@ -21,12 +25,29 @@ export function createBot(config: AppConfig): Bot {
     version: config.server.version,
   });
 
+  const blackboard = new Blackboard();
+  const perception = new Perception(bot, blackboard);
+  const reflex = new ReflexLayer(bot);
+  const stuckMonitor = new StuckMonitor(bot);
+
+  // mineflayer-pvp/collectblock still listen on the deprecated 'physicTick' event, which
+  // makes mineflayer print a one-time warning. Drop just that line; keep all other warns.
+  const origWarn = console.warn.bind(console);
+  console.warn = (...args: unknown[]): void => {
+    if (typeof args[0] === 'string' && args[0].includes('deprecated event (physicTick)')) return;
+    origWarn(...(args as []));
+  };
+
   loadPlugins(bot);
-  registerChatCommands(bot, config);
+  registerChatCommands(bot, config, perception, reflex);
 
   bot.once('spawn', () => {
     logger.info(`Spawned into the world as "${bot.username}". Position: ${bot.entity.position}`);
-    bot.chat('Agent online. Try: come | stop | pos');
+    configureMovements(bot);
+    perception.start();
+    reflex.start();
+    stuckMonitor.start();
+    bot.chat('Agent online. Try: come | stop | pos | status, or just tell me what to do.');
   });
 
   bot.on('kicked', (reason) => logger.warn(`Kicked: ${JSON.stringify(reason)}`));

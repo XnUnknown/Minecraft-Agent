@@ -1,13 +1,26 @@
 import type { Bot } from 'mineflayer';
 import type { Skill, SkillContext } from './types';
 import type { ToolDef } from '../llm/types';
-import { goToPlayer, goToCoordinates, stopMoving } from './actions/navigation';
+import { goToPlayer, goToCoordinates, followPlayer, stopMoving } from './actions/navigation';
 import { reportStatus } from './actions/status';
 import { sayInChat } from './actions/chat';
+import { collectBlock } from './actions/gathering';
+import { attackNearestMob } from './actions/combat';
+import { tossItem } from './actions/inventory';
 import { logger } from '../util/logger';
 
 /** All registered skills. New capabilities are added here. */
-const SKILLS: Skill[] = [goToPlayer, goToCoordinates, stopMoving, reportStatus, sayInChat];
+const SKILLS: Skill[] = [
+  goToPlayer,
+  goToCoordinates,
+  followPlayer,
+  stopMoving,
+  reportStatus,
+  sayInChat,
+  collectBlock,
+  attackNearestMob,
+  tossItem,
+];
 
 export class SkillRegistry {
   private map = new Map<string, Skill>();

@@ -1,9 +1,9 @@
 import type { Bot } from 'mineflayer';
-import pathfinderPkg from 'mineflayer-pathfinder';
 import type { ReflexLayer } from '../reflex/ReflexLayer';
+import { Vec3 } from 'vec3';
+import baritonePkg from '@miner-org/mineflayer-baritone';
 
-const { goals } = pathfinderPkg;
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+const { goals } = baritonePkg;
 
 export interface Vec3Like {
   x: number;
@@ -11,16 +11,9 @@ export interface Vec3Like {
   z: number;
 }
 
-function dist(a: Vec3Like, b: Vec3Like): number {
-  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
-}
-
 /**
- * Walk to within `range` of a (possibly moving) position and **wait until we actually
- * arrive** — unlike a bare setGoal, which returns immediately. Crucially, it survives reflex
- * pre-emption: while the reflex layer is fleeing or fighting we yield the path to it, then
- * re-issue our own goal once it lets go, so the assigned task resumes instead of being
- * forgotten after a scrap with a zombie. Returns true if we arrived, false on timeout/loss.
+ * Walk to a specific coordinate using Baritone's smart waypoints.
+ * Yields if the reflex layer pre-empts (e.g. during combat), resuming when free.
  */
 export async function walkToward(
   bot: Bot,
@@ -28,39 +21,29 @@ export async function walkToward(
   range: number,
   reflex?: ReflexLayer,
   shouldStop?: () => boolean,
-  timeoutMs = 45000,
 ): Promise<boolean> {
-  const start = Date.now();
-  let lastIssued: Vec3Like | null = null;
+  let pos = getPos();
+  if (!pos) return false;
 
-  while (Date.now() - start < timeoutMs) {
-    if (shouldStop?.()) {
-      bot.pathfinder.setGoal(null);
-      return false;
-    }
-    const pos = getPos();
-    if (!pos) return false;
-
-    const me = bot.entity?.position;
-    if (me && dist(me, pos) <= range + 0.5) {
-      bot.pathfinder.setGoal(null);
-      return true;
-    }
-
-    if (reflex?.isBusy()) {
-      // Survival has the wheel (fleeing/fighting). Wait, and force a fresh path afterwards.
-      lastIssued = null;
-      await sleep(300);
-      continue;
-    }
-
-    // (Re)issue the goal if we've never issued it, the target drifted, or we've stalled out.
-    const targetMoved = !lastIssued || dist(lastIssued, pos) > 1.5;
-    if (targetMoved || !bot.pathfinder.isMoving()) {
-      bot.pathfinder.setGoal(new goals.GoalNear(pos.x, pos.y, pos.z, range));
-      lastIssued = { x: pos.x, y: pos.y, z: pos.z };
-    }
-    await sleep(300);
+  // Wait if reflex is busy
+  while (reflex?.isBusy() && !(shouldStop?.())) {
+    await new Promise(r => setTimeout(r, 500));
   }
-  return false;
+
+  if (shouldStop?.()) {
+    bot.ashfinder.stop();
+    return false;
+  }
+
+  // Update pos after reflex waiting
+  pos = getPos();
+  if (!pos) return false;
+
+  try {
+    const goal = new goals.GoalNear(new Vec3(pos.x, pos.y, pos.z), range);
+    const result = await bot.ashfinder.gotoSmart(goal);
+    return result.status === 'success';
+  } catch (err) {
+    return false;
+  }
 }

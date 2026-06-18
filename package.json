@@ -10,10 +10,10 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.2",
+    "@miner-org/mineflayer-baritone": "^4.5.1",
     "dotenv": "^16.4.5",
     "mineflayer": "^4.23.0",
     "mineflayer-collectblock": "^1.6.0",
-    "mineflayer-pathfinder": "^2.4.5",
     "mineflayer-pvp": "^1.3.2",
     "mineflayer-tool": "^1.2.0",
     "openai": "^6.43.0",

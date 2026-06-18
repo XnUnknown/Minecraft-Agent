@@ -6,7 +6,7 @@ import { registerChatCommands } from '../control/chatCommands';
 import { Blackboard } from '../blackboard/Blackboard';
 import { Perception } from '../perception/Perception';
 import { ReflexLayer } from '../reflex/ReflexLayer';
-import { configureMovements, StuckMonitor } from './movement';
+import { configureMovements } from './movement';
 
 /**
  * Create the Mineflayer bot, register plugins, wire chat commands and lifecycle events.
@@ -28,7 +28,6 @@ export function createBot(config: AppConfig): Bot {
   const blackboard = new Blackboard();
   const perception = new Perception(bot, blackboard);
   const reflex = new ReflexLayer(bot);
-  const stuckMonitor = new StuckMonitor(bot);
 
   // mineflayer-pvp/collectblock still listen on the deprecated 'physicTick' event, which
   // makes mineflayer print a one-time warning. Drop just that line; keep all other warns.
@@ -46,7 +45,14 @@ export function createBot(config: AppConfig): Bot {
     configureMovements(bot);
     perception.start();
     reflex.start();
-    stuckMonitor.start();
+
+    // Log what the bot is actively trying to do using Baritone's events
+    bot.ashfinder.on('pathStarted', ({ path, status, goal }: any) => {
+      const goalName = goal.constructor?.name || 'Goal';
+      const target = goal.position ? `(${goal.position.x}, ${goal.position.y}, ${goal.position.z})` : 'unknown target';
+      logger.info(`Baritone navigating via ${goalName} to ${target}. Status: ${status}`);
+    });
+
     bot.chat('Agent online. Try: come | stop | pos | status, or just tell me what to do.');
   });
 

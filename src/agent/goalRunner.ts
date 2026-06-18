@@ -93,7 +93,14 @@ export class GoalRunner {
     const bot = this.bot;
     if (!bot) return;
     try {
-      bot.pathfinder.setGoal(null);
+      bot.ashfinder.stop();
+    } catch {
+      /* ignore */
+    }
+    // Clear any lingering movement states (sprint from a flee, jump from parkour, etc.)
+    // so the next task starts with a clean slate and pathfinder has exclusive control.
+    try {
+      bot.clearControlStates();
     } catch {
       /* ignore */
     }

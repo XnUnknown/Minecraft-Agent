@@ -1,8 +1,8 @@
-import pathfinderPkg from 'mineflayer-pathfinder';
+import baritonePkg from '@miner-org/mineflayer-baritone';
 import type { Skill } from '../types';
 import { walkToward } from '../../util/navigate';
 
-const { goals } = pathfinderPkg;
+const { goals } = baritonePkg;
 
 export const goToPlayer: Skill = {
   def: {
@@ -78,12 +78,11 @@ export const followPlayer: Skill = {
   },
   async run(bot, args, ctx) {
     const playerName = String(args.playerName ?? '');
-    const range = Number.isFinite(Number(args.range)) ? Number(args.range) : 2;
+    const range = Number.isFinite(Number(args.range)) ? Number(args.range) : 3;
     const setFollow = (): boolean => {
       const target = bot.players[playerName]?.entity;
       if (!target) return false;
-      // Dynamic goal: pathfinder re-routes as the player moves, so it keeps following.
-      bot.pathfinder.setGoal(new goals.GoalFollow(target, range), true);
+      bot.ashfinder.followEntity(target, { distance: range });
       return true;
     };
     if (!setFollow()) return `Cannot see player "${playerName}" — they may be out of range.`;
@@ -103,7 +102,8 @@ export const stopMoving: Skill = {
   },
   async run(bot, _args, ctx) {
     ctx.reflex?.setOnReleaseNav(undefined);
-    bot.pathfinder.setGoal(null);
+    bot.ashfinder.stopFollowing();
+    bot.ashfinder.stop();
     return 'Stopped moving.';
   },
 };

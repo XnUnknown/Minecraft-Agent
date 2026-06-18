@@ -1,10 +1,10 @@
 import type { Bot } from 'mineflayer';
-import pathfinderPkg from 'mineflayer-pathfinder';
+import baritonePkg from '@miner-org/mineflayer-baritone';
 import { logger } from '../util/logger';
 import { nearestHostile, type CombatEntity } from '../util/combat';
 import { equipBestWeapon } from '../util/equip';
 
-const { goals } = pathfinderPkg;
+const { goals } = baritonePkg;
 
 const FOOD_FALLBACK = new Set([
   'bread', 'apple', 'golden_apple', 'enchanted_golden_apple', 'cooked_beef', 'cooked_porkchop',
@@ -187,9 +187,11 @@ export class ReflexLayer {
     this.fleeing = true;
     this.bot.setControlState('sprint', true);
     try {
-      // Invert a long follow so we sprint well clear of the threat, not 3-4 blocks.
-      const away = new goals.GoalInvert(new goals.GoalFollow(from as never, 20));
-      this.bot.pathfinder.setGoal(away, true);
+      // Invert a long near so we sprint well clear of the threat.
+      if (from.position) {
+        const away = new goals.GoalInvert(new goals.GoalNear(from.position as any, 20));
+        void this.bot.ashfinder.gotoSmart(away);
+      }
     } catch {
       /* ignore */
     }
@@ -199,7 +201,9 @@ export class ReflexLayer {
   private stopFlee(): void {
     if (!this.fleeing) return;
     this.fleeing = false;
-    this.bot.setControlState('sprint', false);
+    // Clear ALL movement states, not just sprint — if a flee was interrupted mid-jump
+    // or mid-sprint, any lingering state will fight the next pathfinder goal.
+    this.bot.clearControlStates();
     this.releaseNav();
   }
 
@@ -218,7 +222,7 @@ export class ReflexLayer {
       }
     }
     try {
-      this.bot.pathfinder.setGoal(null);
+      this.bot.ashfinder.stop();
     } catch {
       /* ignore */
     }

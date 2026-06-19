@@ -26,14 +26,18 @@ export function createBot(config: AppConfig): Bot {
     version: config.server.version,
   });
 
-  // Wrap once here so EVERY send path (direct bot.chat() calls, sendChat()'s chunking, plugins)
-  // is tracked automatically — the chat listener uses this to recognize and skip our own
-  // echoed messages instead of treating them as a new player command (see chatCommands.ts).
-  const sendChatMessage = bot.chat.bind(bot);
-  bot.chat = (message: string): void => {
-    recordSent(message);
-    sendChatMessage(message);
-  };
+  // mineflayer defers actually attaching plugin methods (bot.chat included) until
+  // 'inject_allowed' fires post-connection — bot.chat doesn't exist yet right after
+  // createBot() returns. Wrap it once it does, so EVERY send path (direct bot.chat() calls,
+  // sendChat()'s chunking, plugins) is tracked automatically; the chat listener uses this to
+  // recognize and skip our own echoed messages instead of treating them as a player command.
+  bot.once('inject_allowed', () => {
+    const sendChatMessage = bot.chat.bind(bot);
+    bot.chat = (message: string): void => {
+      recordSent(message);
+      sendChatMessage(message);
+    };
+  });
 
   const blackboard = new Blackboard();
   const perception = new Perception(bot, blackboard);

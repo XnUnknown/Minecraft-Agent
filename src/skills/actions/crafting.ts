@@ -4,14 +4,25 @@ import type { Recipe } from 'prismarine-recipe';
 import type { Skill, SkillContext, SkillResult } from '../types';
 import { clampInt } from '../util';
 import { recordCraftSuccess } from '../../knowledge/CraftingExperience';
-import { searchOutward } from '../../util/navigate';
+import { searchOutward, walkToward } from '../../util/navigate';
 import { placeNear } from '../../util/building';
+import { equipBestToolForBlock } from '../../util/equip';
 import { collectBlock } from './gathering';
 
 const TABLE_NAME = 'crafting_table';
 /** Caps how many ingredient levels we'll auto-resolve (log -> planks -> stick -> tool is 3
  *  hops) so a genuinely unreachable item fails promptly instead of spiralling. */
 const MAX_DEPTH = 3;
+
+/**
+ * Tracks the ONE crafting table a whole craftItem call settles on, shared across every
+ * recursive pre-craft so they reuse it instead of each independently searching/placing —
+ * and so the top level knows whether to collect it back up once everything is done.
+ */
+interface TableSession {
+  table: Block | null;
+  placedByUs: boolean;
+}
 
 export const craftItem: Skill = {
   def: {
@@ -36,7 +47,15 @@ export const craftItem: Skill = {
   async run(bot, args, ctx) {
     const itemName = String(args.item ?? '').toLowerCase();
     const count = clampInt(args.count, 1, 64, 1);
-    return resolveAndCraft(bot, itemName, count, ctx, 0);
+    const session: TableSession = { table: null, placedByUs: false };
+
+    const result = await resolveAndCraft(bot, itemName, count, ctx, 0, session);
+
+    if (session.placedByUs) {
+      const cleanup = await collectTableBack(bot, session, ctx);
+      if (cleanup) return { ok: result.ok, message: `${result.message} ${cleanup}` };
+    }
+    return result;
   },
 };
 
@@ -124,20 +143,43 @@ async function getTable(
   depth: number,
   notes: string[],
   required: boolean,
+  session: TableSession,
 ): Promise<Block | null> {
+  // Reuse the table this job already secured, if it's still actually there.
+  if (session.table) {
+    const stillThere = bot.blockAt(session.table.position);
+    if (stillThere?.name === TABLE_NAME) return stillThere;
+    session.table = null;
+    session.placedByUs = false;
+  }
+
   const cheap = nearbyTable(bot);
-  if (cheap || !required) return cheap;
-  return findOrMakeTable(bot, ctx, depth, notes);
+  if (cheap) {
+    session.table = cheap;
+    return cheap;
+  }
+  if (!required) return null;
+  return findOrMakeTable(bot, ctx, depth, notes, session);
 }
 
 /** Searches further afield for an existing table, then crafts + places our own as a last resort. */
-async function findOrMakeTable(bot: Bot, ctx: SkillContext, depth: number, notes: string[]): Promise<Block | null> {
+async function findOrMakeTable(
+  bot: Bot,
+  ctx: SkillContext,
+  depth: number,
+  notes: string[],
+  session: TableSession,
+): Promise<Block | null> {
   if (ctx.shouldStop?.()) return null;
   await searchOutward(bot, () => !!nearbyTable(bot), ctx.reflex, ctx.shouldStop);
   const found = nearbyTable(bot);
-  if (found || depth >= MAX_DEPTH || ctx.shouldStop?.()) return found;
+  if (found) {
+    session.table = found;
+    return found;
+  }
+  if (depth >= MAX_DEPTH || ctx.shouldStop?.()) return null;
 
-  const made = await resolveAndCraft(bot, TABLE_NAME, 1, ctx, depth + 1);
+  const made = await resolveAndCraft(bot, TABLE_NAME, 1, ctx, depth + 1, session);
   notes.push(made.message);
   if (!made.ok) return null;
 
@@ -146,7 +188,12 @@ async function findOrMakeTable(bot: Bot, ctx: SkillContext, depth: number, notes
     notes.push("Made a crafting table but couldn't find a spot to place it.");
     return null;
   }
-  return nearbyTable(bot);
+  const table = nearbyTable(bot);
+  if (table) {
+    session.table = table;
+    session.placedByUs = true;
+  }
+  return table;
 }
 
 async function doCraft(
@@ -194,7 +241,14 @@ async function doCraft(
  * something's short. Depth-capped (see MAX_DEPTH) so a genuinely unreachable item fails
  * promptly rather than spiralling.
  */
-async function resolveAndCraft(bot: Bot, itemName: string, count: number, ctx: SkillContext, depth: number): Promise<SkillResult> {
+async function resolveAndCraft(
+  bot: Bot,
+  itemName: string,
+  count: number,
+  ctx: SkillContext,
+  depth: number,
+  session: TableSession,
+): Promise<SkillResult> {
   if (ctx.shouldStop?.()) return { ok: false, message: 'Cancelled.' };
 
   const itemData = bot.registry.itemsByName[itemName];
@@ -208,16 +262,22 @@ async function resolveAndCraft(bot: Bot, itemName: string, count: number, ctx: S
 
   const notes: string[] = [];
   const mightNeedTable = candidates.every((r) => r.requiresTable);
-  let table = await getTable(bot, ctx, depth, notes, mightNeedTable);
+  let table = await getTable(bot, ctx, depth, notes, mightNeedTable, session);
   let { recipe, usedTable } = pickRecipes(bot, itemData.id, count, table);
 
   if (!recipe && !table) {
     // Turns out we can't satisfy any recipe without one after all — now actually go get one.
-    table = await getTable(bot, ctx, depth, notes, true);
+    table = await getTable(bot, ctx, depth, notes, true, session);
     ({ recipe, usedTable } = pickRecipes(bot, itemData.id, count, table));
   }
 
-  if (recipe) return doCraft(bot, itemName, count, recipe, usedTable, notes, ctx);
+  if (recipe) {
+    // Ingredient resolution (gathering, pre-crafting) may have walked the bot away from the
+    // table — without this it can fail with a generic/misleading error simply because it's
+    // not actually standing next to the table it's about to try to activate.
+    if (usedTable) await walkToward(bot, () => usedTable.position, 3, ctx.reflex, ctx.shouldStop);
+    return doCraft(bot, itemName, count, recipe, usedTable, notes, ctx);
+  }
 
   const anyRecipe = bot.recipesAll(itemData.id, null, table ?? true)[0];
   if (!anyRecipe) return { ok: false, message: prefix(notes, `There's no known recipe for "${itemName}".`) };
@@ -239,7 +299,7 @@ async function resolveAndCraft(bot: Bot, itemName: string, count: number, ctx: S
     if (have >= need) continue;
     const ingredientName = bot.registry.items[d.id]?.name;
     if (!ingredientName) continue;
-    const sub = await resolveAndCraft(bot, ingredientName, need - have, ctx, depth + 1);
+    const sub = await resolveAndCraft(bot, ingredientName, need - have, ctx, depth + 1, session);
     notes.push(sub.message);
   }
 
@@ -249,11 +309,34 @@ async function resolveAndCraft(bot: Bot, itemName: string, count: number, ctx: S
   if (!retry.recipe) {
     return { ok: false, message: prefix(notes, `Can't craft ${itemName} yet — missing ${describeMissing(bot, anyRecipe, count)}.`) };
   }
+  // Same reasoning as above: gathering ingredients just now may have moved the bot off the table.
+  if (retry.usedTable) await walkToward(bot, () => retry.usedTable!.position, 3, ctx.reflex, ctx.shouldStop);
   return doCraft(bot, itemName, count, retry.recipe, retry.usedTable, notes, ctx);
 }
 
 function prefix(notes: string[], message: string): string {
   return notes.length ? `${notes.join(' ')} ${message}` : message;
+}
+
+/** Mines the table we placed ourselves back up once the whole job is done, so it doesn't
+ *  litter the world and the bot keeps carrying it for next time. Skipped if cancelled. */
+async function collectTableBack(bot: Bot, session: TableSession, ctx: SkillContext): Promise<string> {
+  if (ctx.shouldStop?.() || !session.table) return '';
+  const pos = session.table.position;
+  const current = bot.blockAt(pos);
+  if (current?.name !== TABLE_NAME) return '';
+
+  try {
+    await walkToward(bot, () => pos, 3, ctx.reflex, ctx.shouldStop);
+    if (ctx.shouldStop?.()) return '';
+    const block = bot.blockAt(pos);
+    if (block?.name !== TABLE_NAME) return '';
+    await equipBestToolForBlock(bot, block);
+    await bot.dig(block);
+    return 'Picked the crafting table back up.';
+  } catch {
+    return '';
+  }
 }
 
 /** Names what's still missing for a recipe, so a failed craft is actionable, not just "no". */

@@ -7,9 +7,15 @@ import { sayInChat } from './actions/chat';
 import { collectBlock } from './actions/gathering';
 import { attackNearestMob } from './actions/combat';
 import { tossItem } from './actions/inventory';
+import { craftItem } from './actions/crafting';
+import { wearItem } from './actions/equipment';
+import { tradeWithVillager } from './actions/trading';
 import { logger } from '../util/logger';
 
-/** All registered skills. New capabilities are added here. */
+/**
+ * All registered skills. To add a new capability: write a `Skill` (def + run) in its own
+ * file under `actions/`, import it here, and add it to this list.
+ */
 const SKILLS: Skill[] = [
   goToPlayer,
   goToCoordinates,
@@ -20,6 +26,9 @@ const SKILLS: Skill[] = [
   collectBlock,
   attackNearestMob,
   tossItem,
+  craftItem,
+  wearItem,
+  tradeWithVillager,
 ];
 
 export class SkillRegistry {

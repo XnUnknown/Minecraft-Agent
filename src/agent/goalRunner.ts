@@ -138,6 +138,11 @@ export class GoalRunner {
     }
     this.reflex.setSuppressDefense(false);
     this.reflex.setOnReleaseNav(undefined);
+    // Clear immediately so describeActivity/queued-detection reflect "stopped" right away —
+    // the in-flight runTask call may take a few more ticks to actually unwind (it polls
+    // shouldStop internally), but nothing should look "current" to the rest of the system
+    // while that happens, or a message sent right after "stop" wrongly queues behind it.
+    this.current = undefined;
   }
 
   private ensureWorker(bot: Bot): void {
@@ -249,6 +254,13 @@ export class GoalRunner {
         const result = await this.skills.execute(bot, step.name, step.args, ctx);
         transcript.push({ tool: step.name, args: step.args, ok: result.ok, message: result.message });
         assistantRecord += `${describeAction(step.name, step.args, result.message)} `;
+        // A long-running step (gathering, crafting) may have been told to stop mid-flight and
+        // only now returned — check again here, not just before the step started, so we don't
+        // loop back and ask the LLM for yet another batch after the user said stop.
+        if (this.cancel) {
+          cancelled = true;
+          break;
+        }
         // Stop the rest of THIS batch on failure (later steps usually depended on it), but
         // still loop back to the LLM below regardless of success or failure.
         if (!result.ok) break;

@@ -195,6 +195,8 @@ async function doCraft(
  * promptly rather than spiralling.
  */
 async function resolveAndCraft(bot: Bot, itemName: string, count: number, ctx: SkillContext, depth: number): Promise<SkillResult> {
+  if (ctx.shouldStop?.()) return { ok: false, message: 'Cancelled.' };
+
   const itemData = bot.registry.itemsByName[itemName];
   if (!itemData) return { ok: false, message: `I don't know an item called "${itemName}".` };
 
@@ -228,7 +230,10 @@ async function resolveAndCraft(bot: Bot, itemName: string, count: number, ctx: S
 
   const craftCount = Math.ceil(count / anyRecipe.result.count);
   for (const d of anyRecipe.delta) {
-    if (d.count >= 0 || ctx.shouldStop?.()) continue;
+    if (d.count >= 0) continue;
+    // A stop request must actually stop the resolution chain here, not just skip this one
+    // ingredient — `continue` would still fall through to crafting below once the loop ends.
+    if (ctx.shouldStop?.()) break;
     const need = -d.count * craftCount;
     const have = bot.inventory.count(d.id, d.metadata);
     if (have >= need) continue;
@@ -237,6 +242,8 @@ async function resolveAndCraft(bot: Bot, itemName: string, count: number, ctx: S
     const sub = await resolveAndCraft(bot, ingredientName, need - have, ctx, depth + 1);
     notes.push(sub.message);
   }
+
+  if (ctx.shouldStop?.()) return { ok: false, message: prefix(notes, 'Cancelled.') };
 
   const retry = pickRecipes(bot, itemData.id, count, table);
   if (!retry.recipe) {

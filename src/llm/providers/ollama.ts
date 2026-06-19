@@ -1,4 +1,3 @@
-import { logger } from '../../util/logger';
 import type { ChatRequest, ChatResponse, LLMProvider, ToolDef } from '../types';
 
 export interface OllamaProviderOptions {
@@ -63,9 +62,6 @@ export class OllamaProvider implements LLMProvider {
             : (tc.function?.arguments ?? {}),
       }))
       .filter((c) => Boolean(c.name));
-    logger.info(`Tool calls: ${JSON.stringify(toolCalls)}`);
-    logger.info(`Message: ${msg.content}`);
-    logger.info(`Raw: ${JSON.stringify(data)}`);
     return { text: msg.content ?? '', toolCalls, raw: data };
   }
 }

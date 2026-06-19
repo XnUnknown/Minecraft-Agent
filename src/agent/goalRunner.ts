@@ -212,6 +212,11 @@ export class GoalRunner {
     let cancelled = false;
 
     for (let batch = 0; batch < MAX_BATCHES; batch++) {
+      logger.info(
+        batch === 0
+          ? `[loop ${batch + 1}] planner request: "${task.message}"`
+          : `[loop ${batch + 1}] planner request: replanning after ${transcript.length} result(s)`,
+      );
       const res = await provider.chat({
         system,
         messages,
@@ -226,8 +231,10 @@ export class GoalRunner {
         // JSON mode's "done" turn is often bare JSON with no prose (e.g. `{"plan": []}`) —
         // extract any real prose instead of treating the raw JSON text as a chat message.
         finalMessage = mode === 'json' ? extractJsonProse(res.text) : res.text.trim();
+        logger.info(`[loop ${batch + 1}] planner response: done${finalMessage ? ` — "${finalMessage}"` : ''}`);
         break;
       }
+      logger.info(`[loop ${batch + 1}] planner response: ${plan.map((p) => p.name).join(', ')}`);
 
       // Native models can say something WHILE calling a tool in the same turn (e.g. "checking
       // the recipe now" + the getRecipe call) — speak that narration right away instead of
@@ -239,9 +246,6 @@ export class GoalRunner {
           sendChat(bot, narration);
           assistantRecord += `${narration} `;
         }
-      }
-      if (plan.length > 1 || batch > 0) {
-        logger.info(`Executing ${plan.length}-step plan (batch ${batch + 1}) for "${task.message}".`);
       }
 
       for (let i = 0; i < plan.length; i++) {

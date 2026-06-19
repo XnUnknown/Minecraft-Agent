@@ -60,11 +60,11 @@ export class SkillRegistry {
     if (!skill) return { ok: false, message: `Unknown tool "${name}".` };
     try {
       const result = await skill.run(bot, args, ctx);
-      logger.info(`skill ${name}(${JSON.stringify(args)}) -> ${result.message}`);
+      logger.info(`[tool] ${name}(${JSON.stringify(args)}) -> ${result.ok ? 'OK' : 'FAILED'}: ${result.message}`);
       return result;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      logger.error(`skill ${name} failed: ${msg}`);
+      logger.error(`[tool] ${name}(${JSON.stringify(args)}) -> FAILED: ${msg}`);
       return { ok: false, message: `Tool ${name} failed: ${msg}` };
     }
   }

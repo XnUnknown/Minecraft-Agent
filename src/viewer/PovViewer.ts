@@ -1,5 +1,4 @@
 import type { Bot } from 'mineflayer';
-import { mineflayer as injectViewer } from 'prismarine-viewer';
 import { logger } from '../util/logger';
 
 const PATH_LINE_ID = 'pathfinder-path';
@@ -39,16 +38,24 @@ let onGoalReached: (() => void) | undefined;
  * bot's live A* path as a glowing line + node markers every time mineflayer-pathfinder
  * recomputes one, clearing it when the goal is reached. Safe to call again while already
  * running (no-op, just re-reports the URL).
+ *
+ * prismarine-viewer is loaded lazily (only when this is actually called), not imported at
+ * module load time — it pulls in `canvas`, a native module that can fail to load on some
+ * machines/Node versions. A failure here is reported back as a normal result; it must never
+ * crash the whole agent just because the viewer (a debug/visualization extra) isn't usable.
  */
-export function startPov(bot: Bot, viewPort: number): { ok: boolean; message: string } {
+export async function startPov(bot: Bot, viewPort: number): Promise<{ ok: boolean; message: string }> {
   if (running) {
     return { ok: true, message: `POV viewer already running — open http://localhost:${port} in a browser.` };
   }
 
   try {
+    const { mineflayer: injectViewer } = await import('prismarine-viewer');
     injectViewer(bot, { port: viewPort, viewDistance: 8, firstPerson: false });
   } catch (err) {
-    return { ok: false, message: `Couldn't start the POV viewer: ${err instanceof Error ? err.message : String(err)}` };
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn(`POV viewer unavailable: ${msg}`);
+    return { ok: false, message: `Couldn't start the POV viewer (${msg}).` };
   }
 
   onPathUpdate = (results): void => {

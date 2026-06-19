@@ -43,14 +43,20 @@ export function registerChatCommands(
 
     const cmd = message.trim().toLowerCase();
     if (MANUAL.has(cmd)) {
-      handleManual(bot, username, cmd, perception, config);
+      void handleManual(bot, username, cmd, perception, config);
       return;
     }
     void runner.handle(bot, username, message);
   });
 }
 
-function handleManual(bot: Bot, username: string, cmd: string, perception: Perception, config: AppConfig): void {
+async function handleManual(
+  bot: Bot,
+  username: string,
+  cmd: string,
+  perception: Perception,
+  config: AppConfig,
+): Promise<void> {
   switch (cmd) {
     case 'obs': {
       const observation = perception.observe();
@@ -83,7 +89,7 @@ function handleManual(bot: Bot, username: string, cmd: string, perception: Perce
     }
     case 'pov':
     case 'pov on': {
-      const result = startPov(bot, config.viewer.port);
+      const result = await startPov(bot, config.viewer.port);
       logger.info(`"${username}" said ${cmd} -> ${result.message}`);
       bot.chat(result.message);
       break;

@@ -218,6 +218,11 @@ export class GoalRunner {
     let assistantRecord = '';
     let finalMessage: string | null = null;
     let cancelled = false;
+    // A small JSON-mode model often doesn't reliably recognize "everything I asked for just
+    // succeeded, I'm done" and instead re-emits the identical plan — without this it would
+    // repeat the whole job (re-gather, re-deliver, ...) forever, batch after batch.
+    let lastPlanSig: string | null = null;
+    let lastBatchAllOk = false;
 
     for (let batch = 0; batch < MAX_BATCHES; batch++) {
       logger.info(
@@ -244,6 +249,13 @@ export class GoalRunner {
       }
       logger.info(`[loop ${batch + 1}] planner response: ${plan.map((p) => p.name).join(', ')}`);
 
+      const planSig = JSON.stringify(plan.map((p) => [p.name, p.args]));
+      if (batch > 0 && lastBatchAllOk && planSig === lastPlanSig) {
+        logger.info(`[loop ${batch + 1}] same plan as the already-fully-successful last batch — treating as done.`);
+        break;
+      }
+      lastPlanSig = planSig;
+
       // Native models can say something WHILE calling a tool in the same turn (e.g. "checking
       // the recipe now" + the getRecipe call) — speak that narration right away instead of
       // discarding it. JSON mode's res.text is the structured plan itself, not prose, so this
@@ -256,6 +268,7 @@ export class GoalRunner {
         }
       }
 
+      lastBatchAllOk = true;
       for (let i = 0; i < plan.length; i++) {
         if (this.cancel) {
           cancelled = true;
@@ -275,10 +288,22 @@ export class GoalRunner {
         }
         // Stop the rest of THIS batch on failure (later steps usually depended on it), but
         // still loop back to the LLM below regardless of success or failure.
-        if (!result.ok) break;
+        if (!result.ok) {
+          lastBatchAllOk = false;
+          break;
+        }
       }
 
       if (cancelled) break;
+
+      // A batch that was ENTIRELY talk (no real action) and succeeded essentially never
+      // needs another follow-up turn — without this, a small model asked "anything else?"
+      // after just answering "hello" will keep inventing slightly different ways to say
+      // hello again, batch after batch, since rephrased text doesn't match the exact-repeat
+      // check below. Exempt batch 0: that's also the shape of "I'll check the recipe now"
+      // (talk-only) said WITHOUT the paired tool call the prompt asks for — continuing once
+      // gives the model a chance to actually call it next turn instead of just talking forever.
+      if (batch > 0 && lastBatchAllOk && plan.every((p) => p.name === 'sayInChat')) break;
 
       // Always loop back with the transcript so far — even a fully successful batch may not
       // be the whole task. The LLM decides it's actually done by returning no more tool calls.

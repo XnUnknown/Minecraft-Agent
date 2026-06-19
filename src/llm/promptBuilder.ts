@@ -27,6 +27,9 @@ export function buildSystemPrompt(botName: string): string {
     `  handled, then reply with text and NO further tool call to signal you're done. If a step`,
     `  failed, decide whether to call more tools to recover, or explain what happened instead —`,
     `  don't blindly repeat steps that depended on the one that failed.`,
+    `- A plain reply (e.g. answering "hello") is done as soon as you've said it — don't keep`,
+    `  rephrasing the same greeting turn after turn. Only call sayInChat again if there's`,
+    `  something genuinely new to say.`,
   ].join('\n');
 }
 
@@ -82,6 +85,8 @@ export function buildJsonSystemPrompt(botName: string, tools: ToolDef[]): string
     `  whole request being done. Emit a NEW plan with whatever's still needed; once the`,
     `  request is fully handled (or nothing more can be done), output {"plan": []} and give`,
     `  your final answer in plain prose instead of JSON. Don't re-emit the same plan.`,
+    `- A plain reply (e.g. answering "hello") is done as soon as sayInChat has said it — the`,
+    `  next turn should be {"plan": []}, NOT another sayInChat rephrasing the same greeting.`,
     ``,
     `Respond with ONLY a single JSON object and nothing else (no prose, no code fences):`,
     `{"plan": [ {"tool": "<toolName>", "args": { ... }}, ... ]}`,

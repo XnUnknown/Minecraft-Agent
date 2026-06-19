@@ -15,6 +15,7 @@ import {
 } from '../llm/promptBuilder';
 import { ConversationMemory, type ConversationMemoryOptions } from './ConversationMemory';
 import { contextBlock as craftingContextBlock } from '../knowledge/CraftingExperience';
+import { contextBlock as agentExperienceContextBlock, recordExperience } from '../knowledge/AgentExperience';
 import { sendChat } from '../util/chat';
 import { logger } from '../util/logger';
 
@@ -203,6 +204,7 @@ export class GoalRunner {
       mode === 'json' ? buildJsonSystemPrompt(bot.username, tools) : buildSystemPrompt(bot.username),
       this.memory.summaryText(),
       craftingContextBlock(),
+      agentExperienceContextBlock(),
       this.peerUsernames,
     );
 
@@ -330,6 +332,20 @@ export class GoalRunner {
         sendChat(bot, reply);
         assistantRecord += reply;
       }
+
+      // The main goal completed cleanly (last batch succeeded, nothing cancelled) AND
+      // generated code/a saved skill actually did some of the work — worth remembering the
+      // approach for next time, the same way CraftingExperience does for recipes.
+      const generatedSteps = transcript.filter(
+        (t) => t.ok && (t.tool === 'runCode' || this.skills.isDynamic(t.tool)),
+      );
+      if (lastBatchAllOk && generatedSteps.length) {
+        recordExperience(
+          task.message,
+          generatedSteps.map((t) => `${t.tool}(${JSON.stringify(t.args)})`).join('; '),
+          reply || 'Completed successfully.',
+        );
+      }
     }
 
     this.memory.addUser(task.requestedBy, task.message);
@@ -393,7 +409,13 @@ function normalize(message: string): string {
   return message.trim().toLowerCase().replace(/[!?.]+$/g, '').replace(/\s+/g, ' ');
 }
 
-function withContext(system: string, summary: string, craftingNotes: string, peerUsernames: string[]): string {
+function withContext(
+  system: string,
+  summary: string,
+  craftingNotes: string,
+  agentExperience: string,
+  peerUsernames: string[],
+): string {
   const parts = [system];
   if (peerUsernames.length) {
     parts.push(
@@ -403,6 +425,7 @@ function withContext(system: string, summary: string, craftingNotes: string, pee
     );
   }
   if (craftingNotes) parts.push(`Known crafting recipes (learned from past successes):\n${craftingNotes}`);
+  if (agentExperience) parts.push(`Past completed tasks (learned approaches that already worked):\n${agentExperience}`);
   if (summary) parts.push(`Conversation summary so far:\n${summary}`);
   return parts.join('\n\n');
 }

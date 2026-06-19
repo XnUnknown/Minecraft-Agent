@@ -1,6 +1,7 @@
 import type { Bot } from 'mineflayer';
 import type { ToolDef } from '../llm/types';
 import type { ReflexLayer } from '../reflex/ReflexLayer';
+import type { SkillRegistry } from './registry';
 
 /** Context passed to a skill at execution time. */
 export interface SkillContext {
@@ -14,6 +15,12 @@ export interface SkillContext {
    * and "do X now" actually interrupt them.
    */
   shouldStop?: () => boolean;
+  /**
+   * The registry running this skill, injected by `SkillRegistry.execute` itself. Lets
+   * runCode/saveSkill call back into other tools by name (the sandbox bridge) and register
+   * newly-saved skills live, without every skill needing it threaded through separately.
+   */
+  registry?: SkillRegistry;
 }
 
 /** Structured outcome of a skill run — lets the executor react to failure, not just guess from prose. */

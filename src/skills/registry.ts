@@ -12,6 +12,7 @@ import { wearItem } from './actions/equipment';
 import { tradeWithVillager } from './actions/trading';
 import { searchWide } from './actions/search';
 import { messageAgent } from './actions/messaging';
+import { runCode, saveSkill, loadStoredSkills, buildDynamicSkill } from './actions/code';
 import { logger } from '../util/logger';
 
 /**
@@ -34,22 +35,47 @@ const SKILLS: Skill[] = [
   tradeWithVillager,
   searchWide,
   messageAgent,
+  runCode,
+  saveSkill,
 ];
 
 export class SkillRegistry {
   private map = new Map<string, Skill>();
+  /** Names of skills loaded from data/skills/*.json or registered live via saveSkill —
+   *  tracked separately so goalRunner can tell "ran generated code" apart from a built-in. */
+  private dynamicNames = new Set<string>();
 
   constructor() {
     for (const s of SKILLS) this.map.set(s.def.name, s);
+    for (const stored of loadStoredSkills()) {
+      if (this.map.has(stored.name)) {
+        logger.warn(`Saved skill "${stored.name}" collides with a built-in tool name — skipped.`);
+        continue;
+      }
+      this.map.set(stored.name, buildDynamicSkill(stored));
+      this.dynamicNames.add(stored.name);
+      logger.info(`Loaded saved skill "${stored.name}".`);
+    }
   }
 
-  /** Tool schemas to send to the LLM. */
+  /** Tool schemas to send to the LLM — includes dynamically loaded/saved skills. */
   toolDefs(): ToolDef[] {
-    return SKILLS.map((s) => s.def);
+    return [...this.map.values()].map((s) => s.def);
   }
 
   has(name: string): boolean {
     return this.map.has(name);
+  }
+
+  /** Registers a new skill immediately (used by saveSkill so it's callable this session). */
+  registerDynamic(skill: Skill): void {
+    this.map.set(skill.def.name, skill);
+    this.dynamicNames.add(skill.def.name);
+  }
+
+  /** True for a skill loaded from data/skills/*.json or saved live this session. */
+  isDynamic(name: string): boolean {
+    return this.dynamicNames.has(name);
   }
 
   async execute(
@@ -61,7 +87,7 @@ export class SkillRegistry {
     const skill = this.map.get(name);
     if (!skill) return { ok: false, message: `Unknown tool "${name}".` };
     try {
-      const result = await skill.run(bot, args, ctx);
+      const result = await skill.run(bot, args, { ...ctx, registry: this });
       logger.info(`[tool] ${name}(${JSON.stringify(args)}) -> ${result.ok ? 'OK' : 'FAILED'}: ${result.message}`);
       return result;
     } catch (err) {

@@ -30,6 +30,13 @@ export function buildSystemPrompt(botName: string): string {
     `- A plain reply (e.g. answering "hello") is done as soon as you've said it — don't keep`,
     `  rephrasing the same greeting turn after turn. Only call sayInChat again if there's`,
     `  something genuinely new to say.`,
+    `- runCode lets you write JavaScript using bot, skills.<toolName>(args) (every tool here,`,
+    `  callable by name), sleep(ms), log(...), and Vec3 — reach for it only for logic a plain`,
+    `  tool call can't express (conditionals, loops, combining several tools), not as a`,
+    `  default. If that code worked and is the kind of thing you'll be asked for again (e.g.`,
+    `  "trade with the villager" -> check what they want, gather/search for it with existing`,
+    `  tools, bring it back, then tradeWithVillager), call saveSkill right after so it becomes`,
+    `  a real tool next time instead of rewriting the code.`,
   ].join('\n');
 }
 
@@ -87,6 +94,14 @@ export function buildJsonSystemPrompt(botName: string, tools: ToolDef[]): string
     `  your final answer in plain prose instead of JSON. Don't re-emit the same plan.`,
     `- A plain reply (e.g. answering "hello") is done as soon as sayInChat has said it — the`,
     `  next turn should be {"plan": []}, NOT another sayInChat rephrasing the same greeting.`,
+    `- runCode runs JavaScript you write against bot, skills.<toolName>(args) (every tool`,
+    `  above, callable by name instead of as a plan step), sleep(ms), log(...), and Vec3 —`,
+    `  use it only for logic a plain tool call can't express (conditionals, loops, combining`,
+    `  several tools), not as a default replacement for normal plan steps. If the code worked`,
+    `  and is likely to be needed again (e.g. "trade with the villager" -> check the trades`,
+    `  on offer, gather/search for whatever's missing with existing tools, bring it back,`,
+    `  then tradeWithVillager), call saveSkill right after with that code so it becomes a`,
+    `  real tool you can call directly next time, instead of rewriting the code.`,
     ``,
     `Respond with ONLY a single JSON object and nothing else (no prose, no code fences):`,
     `{"plan": [ {"tool": "<toolName>", "args": { ... }}, ... ]}`,

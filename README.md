@@ -71,5 +71,16 @@ Agents can ask each other for help via chat (the `messageAgent` tool) — e.g. "
 Steve_AI2 to bring 4 oak_log to Steve_AI1." The asked agent either does it and delivers,
 or replies that it's busy right now instead of silently queuing behind its current job.
 
+### Writing/learning new capabilities (Voyager-style)
+Beyond the built-in skills, the agent can write and run its own JavaScript via the
+`runCode` tool — a sandboxed (`node:vm`) snippet with access to `bot`, every other tool as
+`skills.<name>(args)`, `sleep`, `log`, and `Vec3`. When that code works and looks like
+something it'll be asked for again (e.g. "trade with the villager" -> check what they
+want, gather/search for it, bring it back, then trade), it calls `saveSkill` to persist
+that code under a name — `data/skills/<name>.json` — which then shows up as a real tool,
+usable immediately and on every future boot. Tasks completed this way are logged to
+`data/agent_experience.md` (mirrors `data/crafting_experience.md`) and fed back into every
+future plan, so approaches that already worked don't get re-derived from scratch.
+
 ### Useful checks
 - `npm run typecheck` — verify the TypeScript compiles.

@@ -17,8 +17,9 @@ import { contextBlock as craftingContextBlock } from '../knowledge/CraftingExper
 import { sendChat } from '../util/chat';
 import { logger } from '../util/logger';
 
-/** Batches between an LLM call and execution; capped to bound replan cost on repeated failure. */
-const MAX_BATCHES = 4;
+/** Turns between an LLM call and execution; capped to bound cost. Every task now takes at
+ *  least 2 (act, then confirm-done), so this needs more headroom than a failure-only retry cap. */
+const MAX_BATCHES = 6;
 
 interface Task {
   requestedBy: string;
@@ -162,11 +163,15 @@ export class GoalRunner {
   }
 
   /**
-   * Runs one task as a sequence of LLM-planned batches. Each batch executes in order and
-   * stops at the first failed step (later steps usually depended on it); a failure feeds the
-   * whole transcript back to the LLM so it can issue a corrective plan or give up with an
-   * explanation, instead of blindly continuing a plan whose premise just broke. Implements
-   * ARCHITECTURE_PLAN.md §5.3b/§5.4 ("batch executor" + replan-on-failure).
+   * Runs one task as a ReAct-style loop: act, observe the results, decide what's next —
+   * repeated until the LLM itself signals it's done (a turn with no tool calls), not just
+   * when a batch fails. A batch still stops at its first failed step (later steps usually
+   * depended on it), but **every** batch — success or failure — feeds the transcript back
+   * for another turn, since "this step succeeded" isn't the same as "the whole task is
+   * done" (e.g. checking a recipe succeeding is not the same as having acted on it).
+   * Native tool-calling models can narrate AND call tools in the same turn — that text is
+   * spoken immediately instead of being discarded. Implements ARCHITECTURE_PLAN.md
+   * §5.3b/§5.4 ("batch executor" + replan), generalized from failure-only to every turn.
    */
   private async runTask(bot: Bot, task: Task): Promise<void> {
     let provider: LLMProvider;
@@ -198,7 +203,6 @@ export class GoalRunner {
     const transcript: TranscriptEntry[] = [];
     let assistantRecord = '';
     let finalMessage: string | null = null;
-    let willSpeak = false;
     let cancelled = false;
 
     for (let batch = 0; batch < MAX_BATCHES; batch++) {
@@ -216,31 +220,41 @@ export class GoalRunner {
         finalMessage = res.text.trim();
         break;
       }
+
+      // Native models can say something WHILE calling a tool in the same turn (e.g. "checking
+      // the recipe now" + the getRecipe call) — speak that narration right away instead of
+      // discarding it. JSON mode's res.text is the structured plan itself, not prose, so this
+      // doesn't apply there (narrate-while-acting works there via an explicit sayInChat step).
+      if (mode !== 'json') {
+        const narration = res.text.trim();
+        if (narration) {
+          sendChat(bot, narration);
+          assistantRecord += `${narration} `;
+        }
+      }
       if (plan.length > 1 || batch > 0) {
         logger.info(`Executing ${plan.length}-step plan (batch ${batch + 1}) for "${task.message}".`);
       }
 
-      let batchFailed = false;
       for (let i = 0; i < plan.length; i++) {
         if (this.cancel) {
           cancelled = true;
           break;
         }
         const step = plan[i];
-        if (step.name === 'sayInChat') willSpeak = true;
         if (this.current) this.current.step = `batch ${batch + 1} step ${i + 1}/${plan.length}: ${step.name}`;
         const result = await this.skills.execute(bot, step.name, step.args, ctx);
         transcript.push({ tool: step.name, args: step.args, ok: result.ok, message: result.message });
         assistantRecord += `${describeAction(step.name, step.args, result.message)} `;
-        if (!result.ok) {
-          batchFailed = true;
-          break;
-        }
+        // Stop the rest of THIS batch on failure (later steps usually depended on it), but
+        // still loop back to the LLM below regardless of success or failure.
+        if (!result.ok) break;
       }
 
-      if (cancelled || !batchFailed) break; // done, or no point continuing this run
+      if (cancelled) break;
 
-      // Replan: recap the whole transcript so far and let the LLM decide what to do next.
+      // Always loop back with the transcript so far — even a fully successful batch may not
+      // be the whole task. The LLM decides it's actually done by returning no more tool calls.
       messages = [
         ...this.memory.recent(),
         baseUser,
@@ -252,7 +266,7 @@ export class GoalRunner {
       assistantRecord += '(cancelled) ';
     } else {
       let reply = finalMessage?.trim() ?? '';
-      if (!reply && !willSpeak) {
+      if (!reply) {
         reply = transcript.length
           ? await this.composeFinalReply(task, transcript)
           : "I'm not sure how to help with that yet.";

@@ -26,28 +26,34 @@ export function sendChat(bot: { chat(msg: string): void }, message: string): voi
 
 /** How long a "we just said this" record is trusted as our own echo, not a new player message. */
 const SELF_ECHO_WINDOW_MS = 5000;
-const recentlySent: Array<{ text: string; at: number }> = [];
+/** Keyed per bot instance, not module-level — multi-agent mode runs several bots (each with
+ *  its own outgoing messages) in the same process; sharing one list would make bot A's
+ *  message wrongly suppress bot B hearing it as a peer message. */
+const recentlySent = new WeakMap<object, Array<{ text: string; at: number }>>();
 
 function normalizeForCompare(s: string): string {
   return s.trim().toLowerCase();
 }
 
 /**
- * Records a message we just sent (call this from wherever `bot.chat` is actually invoked —
- * see createBot.ts, which wraps it once so every send path is covered automatically). The
- * server echoes our own messages back through the same 'chat' event as player messages; some
- * server chat-formatting plugins rewrite the username on that echo, so matching on username
- * alone isn't reliable — `wasRecentlySent` is the text-based backstop for that case.
+ * Records a message a specific bot just sent (call this from wherever that bot's `bot.chat`
+ * is actually invoked — see createBot.ts, which wraps it once so every send path is covered
+ * automatically). The server echoes a bot's own messages back through the same 'chat' event
+ * as player messages; some server chat-formatting plugins rewrite the username on that echo,
+ * so matching on username alone isn't reliable — `wasRecentlySent` is the text-based backstop.
  */
-export function recordSent(message: string): void {
+export function recordSent(bot: object, message: string): void {
   const now = Date.now();
-  recentlySent.push({ text: normalizeForCompare(message), at: now });
-  while (recentlySent.length && now - recentlySent[0].at > SELF_ECHO_WINDOW_MS) recentlySent.shift();
+  const list = recentlySent.get(bot) ?? [];
+  list.push({ text: normalizeForCompare(message), at: now });
+  while (list.length && now - list[0].at > SELF_ECHO_WINDOW_MS) list.shift();
+  recentlySent.set(bot, list);
 }
 
-/** True if `message` matches something we ourselves sent within the last few seconds. */
-export function wasRecentlySent(message: string): boolean {
+/** True if `message` matches something this specific bot itself sent within the last few seconds. */
+export function wasRecentlySent(bot: object, message: string): boolean {
   const now = Date.now();
   const text = normalizeForCompare(message);
-  return recentlySent.some((e) => now - e.at <= SELF_ECHO_WINDOW_MS && e.text === text);
+  const list = recentlySent.get(bot);
+  return !!list?.some((e) => now - e.at <= SELF_ECHO_WINDOW_MS && e.text === text);
 }

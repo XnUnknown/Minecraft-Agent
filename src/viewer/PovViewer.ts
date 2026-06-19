@@ -24,14 +24,15 @@ function viewerOf(bot: Bot): ViewerHandle | undefined {
   return (bot as unknown as { viewer?: ViewerHandle }).viewer;
 }
 
-/**
- * Module-level state: one POV viewer per process. Fine while the agent is single-bot;
- * will need to move onto a per-bot instance once multi-agent support lands.
- */
-let running = false;
-let port = 0;
-let onPathUpdate: ((results: { path: Point[] }) => void) | undefined;
-let onGoalReached: (() => void) | undefined;
+interface PovState {
+  port: number;
+  onPathUpdate: (results: { path: Point[] }) => void;
+  onGoalReached: () => void;
+}
+
+/** Keyed by bot instance, not module-level — multi-agent mode can run several bots (and
+ *  therefore several viewers, on different ports) in the same process. */
+const sessions = new WeakMap<Bot, PovState>();
 
 /**
  * Starts the 3D POV viewer (prismarine-viewer) on `viewPort` and wires it to redraw the
@@ -45,8 +46,9 @@ let onGoalReached: (() => void) | undefined;
  * crash the whole agent just because the viewer (a debug/visualization extra) isn't usable.
  */
 export async function startPov(bot: Bot, viewPort: number): Promise<{ ok: boolean; message: string }> {
-  if (running) {
-    return { ok: true, message: `POV viewer already running — open http://localhost:${port} in a browser.` };
+  const existing = sessions.get(bot);
+  if (existing) {
+    return { ok: true, message: `POV viewer already running — open http://localhost:${existing.port} in a browser.` };
   }
 
   try {
@@ -58,7 +60,7 @@ export async function startPov(bot: Bot, viewPort: number): Promise<{ ok: boolea
     return { ok: false, message: `Couldn't start the POV viewer (${msg}).` };
   }
 
-  onPathUpdate = (results): void => {
+  const onPathUpdate = (results: { path: Point[] }): void => {
     const viewer = viewerOf(bot);
     if (!viewer) return;
     const path = results.path ?? [];
@@ -72,7 +74,7 @@ export async function startPov(bot: Bot, viewPort: number): Promise<{ ok: boolea
     viewer.drawLine(PATH_LINE_ID, points, PATH_COLOR);
     viewer.drawPoints(PATH_NODES_ID, points, PATH_COLOR, 8);
   };
-  onGoalReached = (): void => {
+  const onGoalReached = (): void => {
     const viewer = viewerOf(bot);
     viewer?.erase(PATH_LINE_ID);
     viewer?.erase(PATH_NODES_ID);
@@ -80,26 +82,24 @@ export async function startPov(bot: Bot, viewPort: number): Promise<{ ok: boolea
 
   bot.on('path_update', onPathUpdate);
   bot.on('goal_reached', onGoalReached);
+  sessions.set(bot, { port: viewPort, onPathUpdate, onGoalReached });
 
-  running = true;
-  port = viewPort;
   logger.info(`POV viewer running at http://localhost:${viewPort} (reachable on your LAN, not just localhost).`);
   return { ok: true, message: `POV viewer running — open http://localhost:${viewPort} in a browser.` };
 }
 
-/** Stops the viewer and unwires the path listeners. Safe to call even if not running. */
+/** Stops this bot's viewer and unwires its path listeners. Safe to call even if not running. */
 export function stopPov(bot: Bot): { ok: boolean; message: string } {
-  if (!running) return { ok: true, message: 'POV viewer is not running.' };
+  const session = sessions.get(bot);
+  if (!session) return { ok: true, message: 'POV viewer is not running.' };
 
   viewerOf(bot)?.close();
-  if (onPathUpdate) bot.removeListener('path_update', onPathUpdate);
-  if (onGoalReached) bot.removeListener('goal_reached', onGoalReached);
-  onPathUpdate = undefined;
-  onGoalReached = undefined;
-  running = false;
+  bot.removeListener('path_update', session.onPathUpdate);
+  bot.removeListener('goal_reached', session.onGoalReached);
+  sessions.delete(bot);
   return { ok: true, message: 'POV viewer stopped.' };
 }
 
-export function isPovRunning(): boolean {
-  return running;
+export function isPovRunning(bot: Bot): boolean {
+  return sessions.has(bot);
 }

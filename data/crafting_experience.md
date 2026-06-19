@@ -53,3 +53,8 @@ once that exists, this file gets ingested once and the raw injection below can s
 - Ingredients per craft: 1x oak_log
 - Yields per craft: 4x oak_planks
 - Requires crafting table: no
+
+## oak_fence
+- Ingredients per craft: 4x oak_planks, 2x stick
+- Yields per craft: 3x oak_fence
+- Requires crafting table: yes

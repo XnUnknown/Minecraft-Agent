@@ -11,6 +11,7 @@ import { craftItem, getRecipe } from './actions/crafting';
 import { wearItem } from './actions/equipment';
 import { tradeWithVillager } from './actions/trading';
 import { searchWide } from './actions/search';
+import { messageAgent } from './actions/messaging';
 import { logger } from '../util/logger';
 
 /**
@@ -32,6 +33,7 @@ const SKILLS: Skill[] = [
   wearItem,
   tradeWithVillager,
   searchWide,
+  messageAgent,
 ];
 
 export class SkillRegistry {

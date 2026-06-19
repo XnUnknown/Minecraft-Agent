@@ -1,13 +1,14 @@
 import type { Bot } from 'mineflayer';
 // mineflayer-pathfinder is CommonJS; default-import then destructure (see bot/plugins.ts).
 import pathfinderPkg from 'mineflayer-pathfinder';
-import type { AppConfig } from '../config/loadConfig';
+import type { AppConfig, AgentProfile } from '../config/loadConfig';
 import type { Perception } from '../perception/Perception';
 import type { ReflexLayer } from '../reflex/ReflexLayer';
 import { logger } from '../util/logger';
 import { GoalRunner } from '../agent/goalRunner';
 import { startPov, stopPov } from '../viewer/PovViewer';
 import { wasRecentlySent } from '../util/chat';
+import { parseTargets } from './agentRouting';
 
 const { goals } = pathfinderPkg;
 
@@ -23,17 +24,26 @@ const MANUAL = new Set(['come', 'pos', 'obs', 'pov', 'pov on', 'pov off']);
  * Stage 2: manual chat control (come / stop / pos).
  * Stage 3: any other chat text is routed to the LLM planner via GoalRunner.
  * Stage 4: GoalRunner observes via the shared Perception/Blackboard; `obs` dumps it.
+ *
+ * Multi-agent: `peerUsernames` are every other configured agent. A message is "for me"
+ * if it names me (anywhere in the text, alongside any other agents) — or, when no other
+ * agents are configured at all, if it names nobody (today's single-bot default, so chat
+ * still needs no naming in that common case). Peer-agent senders (another bot, not a
+ * human) get a direct busy-or-accept reply instead of silently queuing — see `isBusy()`.
  */
 export function registerChatCommands(
   bot: Bot,
   config: AppConfig,
+  profile: AgentProfile,
+  peerUsernames: string[],
   perception: Perception,
   reflex: ReflexLayer,
 ): void {
-  const runner = new GoalRunner(perception, reflex, {
+  const runner = new GoalRunner(perception, reflex, peerUsernames, {
     maxMessages: config.conversation.maxMessages,
     keepRecent: config.conversation.keepRecent,
   });
+  const knownNames = [profile.username, ...peerUsernames];
 
   bot.once('spawn', () => {
     logger.info('Chat control ready. Manual: come | pos | obs | pov | pov off. stop/status + any other chat -> agent.');
@@ -43,14 +53,30 @@ export function registerChatCommands(
     if (username.trim().toLowerCase() === bot.username.trim().toLowerCase()) return;
     // Backstop for servers whose chat-formatting plugins rewrite the echoed username on our
     // own messages — without this the agent can end up "hearing" and reacting to itself.
-    if (wasRecentlySent(message)) return;
+    if (wasRecentlySent(bot, message)) return;
 
-    const cmd = message.trim().toLowerCase();
+    const { targets, rest } = parseTargets(message, knownNames);
+    const addressedToMe = targets.some((t) => t.toLowerCase() === profile.username.toLowerCase());
+    const noNameGiven = targets.length === 0;
+    const singleAgentMode = peerUsernames.length === 0;
+    if (!addressedToMe && !(noNameGiven && singleAgentMode)) return; // meant for someone else
+
+    const text = rest;
+    const cmd = text.trim().toLowerCase();
     if (MANUAL.has(cmd)) {
-      void handleManual(bot, username, cmd, perception, config);
+      void handleManual(bot, username, cmd, perception, profile);
       return;
     }
-    void runner.handle(bot, username, message);
+
+    // A peer bot's request gets a direct busy-or-accept reply instead of silently queuing
+    // behind whatever this agent is already doing — a human's request still queues as usual.
+    const senderIsPeer = peerUsernames.some((p) => p.toLowerCase() === username.toLowerCase());
+    if (senderIsPeer && runner.isBusy()) {
+      bot.chat(`${username} I'm busy right now — ${runner.describeActivity(bot)}`);
+      return;
+    }
+
+    void runner.handle(bot, username, text);
   });
 }
 
@@ -59,7 +85,7 @@ async function handleManual(
   username: string,
   cmd: string,
   perception: Perception,
-  config: AppConfig,
+  profile: AgentProfile,
 ): Promise<void> {
   switch (cmd) {
     case 'obs': {
@@ -93,7 +119,7 @@ async function handleManual(
     }
     case 'pov':
     case 'pov on': {
-      const result = await startPov(bot, config.viewer.port);
+      const result = await startPov(bot, profile.viewerPort);
       logger.info(`"${username}" said ${cmd} -> ${result.message}`);
       bot.chat(result.message);
       break;

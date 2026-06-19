@@ -54,5 +54,22 @@ browser, in its own window alongside the Minecraft client. It shows what the bot
 and draws its current A* path as a glowing line in real time. Say **`pov off`** to stop it.
 Note: the viewer's web server listens on all network interfaces, not just localhost.
 
+### Running multiple agents
+Add an `agents:` list to `config/default.yaml` (see the commented example there) — each
+entry is one bot's username. With only one agent (the default), chat needs no name, same
+as always. With more than one, name who a message is for, anywhere in the text — e.g.
+"Steve_AI1 Steve_AI2 collect some wood" addresses both; an unnamed message is ignored by
+everyone once there's more than one agent.
+
+Two ways to actually run them, same behavior either way:
+- **One process, N bots:** just `npm start` — it boots every agent in `agents:`.
+- **N separate processes:** `AGENT_NAME=Steve_AI1 npm start` runs only that one profile;
+  repeat per agent in separate terminals, or let `npm run start:multi` spawn one child
+  process per agent for you (prefixes each one's log lines).
+
+Agents can ask each other for help via chat (the `messageAgent` tool) — e.g. "ask
+Steve_AI2 to bring 4 oak_log to Steve_AI1." The asked agent either does it and delivers,
+or replies that it's busy right now instead of silently queuing behind its current job.
+
 ### Useful checks
 - `npm run typecheck` — verify the TypeScript compiles.

@@ -48,6 +48,7 @@ export class GoalRunner {
   constructor(
     private readonly perception: Perception,
     private readonly reflex: ReflexLayer,
+    private readonly peerUsernames: string[] = [],
     memoryOpts?: ConversationMemoryOptions,
   ) {
     this.memory = new ConversationMemory(memoryOpts);
@@ -96,6 +97,12 @@ export class GoalRunner {
       if (this.current) bot.chat(`Queued — I'll get to that after the current job.`);
     }
     this.ensureWorker(bot);
+  }
+
+  /** True while a task is actively running (not just queued) — used to give peer agents a
+   *  direct busy reply instead of silently queuing their request behind this one. */
+  isBusy(): boolean {
+    return !!this.current;
   }
 
   /** A short, live description of what the bot is doing — answerable mid-task, no LLM. */
@@ -196,6 +203,7 @@ export class GoalRunner {
       mode === 'json' ? buildJsonSystemPrompt(bot.username, tools) : buildSystemPrompt(bot.username),
       this.memory.summaryText(),
       craftingContextBlock(),
+      this.peerUsernames,
     );
 
     const observation = this.perception.observe();
@@ -360,8 +368,15 @@ function normalize(message: string): string {
   return message.trim().toLowerCase().replace(/[!?.]+$/g, '').replace(/\s+/g, ' ');
 }
 
-function withContext(system: string, summary: string, craftingNotes: string): string {
+function withContext(system: string, summary: string, craftingNotes: string, peerUsernames: string[]): string {
   const parts = [system];
+  if (peerUsernames.length) {
+    parts.push(
+      `Other agents online alongside you: ${peerUsernames.join(', ')}. Use messageAgent to ask ` +
+        `one of them for help (e.g. a material you don't have) — they'll do it and deliver, or ` +
+        `reply that they're busy.`,
+    );
+  }
   if (craftingNotes) parts.push(`Known crafting recipes (learned from past successes):\n${craftingNotes}`);
   if (summary) parts.push(`Conversation summary so far:\n${summary}`);
   return parts.join('\n\n');

@@ -12,5 +12,8 @@ agent:
   brain: brains/default  # portable brain folder (used from Stage 9)
 
 conversation:
-  maxMessages: 16        # compact the chat history once it exceeds this many messages
-  keepRecent: 6          # messages kept verbatim after compaction (older ones -> summary)
+  maxMessages: 32       # compact the chat history once it exceeds this many messages
+  keepRecent: 20         # messages kept verbatim after compaction (older ones -> summary)
+
+viewer:
+  port: 3000             # 3D POV viewer (prismarine-viewer) — toggle in-game with "pov"/"pov off"

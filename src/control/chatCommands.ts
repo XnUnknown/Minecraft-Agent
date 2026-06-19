@@ -6,15 +6,17 @@ import type { Perception } from '../perception/Perception';
 import type { ReflexLayer } from '../reflex/ReflexLayer';
 import { logger } from '../util/logger';
 import { GoalRunner } from '../agent/goalRunner';
+import { startPov, stopPov } from '../viewer/PovViewer';
 
 const { goals } = pathfinderPkg;
 
 /**
  * Hard-coded manual overrides (zero-cost, always available). `obs` is a perception debug
- * aid. Note: `stop` is intentionally NOT here — it's routed to the GoalRunner so it cancels
- * the whole task queue + active gathering/combat, not just pathfinding.
+ * aid. `pov`/`pov off` toggle the 3D viewer. Note: `stop` is intentionally NOT here — it's
+ * routed to the GoalRunner so it cancels the whole task queue + active gathering/combat,
+ * not just pathfinding.
  */
-const MANUAL = new Set(['come', 'pos', 'obs']);
+const MANUAL = new Set(['come', 'pos', 'obs', 'pov', 'pov on', 'pov off']);
 
 /**
  * Stage 2: manual chat control (come / stop / pos).
@@ -33,7 +35,7 @@ export function registerChatCommands(
   });
 
   bot.once('spawn', () => {
-    logger.info('Chat control ready. Manual: come | pos | obs. stop/status + any other chat -> agent.');
+    logger.info('Chat control ready. Manual: come | pos | obs | pov | pov off. stop/status + any other chat -> agent.');
   });
 
   bot.on('chat', (username, message) => {
@@ -41,14 +43,14 @@ export function registerChatCommands(
 
     const cmd = message.trim().toLowerCase();
     if (MANUAL.has(cmd)) {
-      handleManual(bot, username, cmd, perception);
+      handleManual(bot, username, cmd, perception, config);
       return;
     }
     void runner.handle(bot, username, message);
   });
 }
 
-function handleManual(bot: Bot, username: string, cmd: string, perception: Perception): void {
+function handleManual(bot: Bot, username: string, cmd: string, perception: Perception, config: AppConfig): void {
   switch (cmd) {
     case 'obs': {
       const observation = perception.observe();
@@ -77,6 +79,19 @@ function handleManual(bot: Bot, username: string, cmd: string, perception: Perce
     case 'pos': {
       const p = bot.entity.position;
       bot.chat(`I'm at ${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}.`);
+      break;
+    }
+    case 'pov':
+    case 'pov on': {
+      const result = startPov(bot, config.viewer.port);
+      logger.info(`"${username}" said ${cmd} -> ${result.message}`);
+      bot.chat(result.message);
+      break;
+    }
+    case 'pov off': {
+      const result = stopPov(bot);
+      logger.info(`"${username}" said ${cmd} -> ${result.message}`);
+      bot.chat(result.message);
       break;
     }
   }

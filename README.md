@@ -47,5 +47,12 @@ npm start
 Join the server in your Minecraft client — you should see **`Steve_AI`** spawn and say
 **"Agent online."** in chat.
 
+### Watching it work (3D viewer)
+Say **`pov`** in chat (or type it as the agent's own player if testing solo) to open a live
+3D view: `http://localhost:3000` (port set by `viewer.port` in `config/default.yaml`) in your
+browser, in its own window alongside the Minecraft client. It shows what the bot perceives
+and draws its current A* path as a glowing line in real time. Say **`pov off`** to stop it.
+Note: the viewer's web server listens on all network interfaces, not just localhost.
+
 ### Useful checks
 - `npm run typecheck` — verify the TypeScript compiles.

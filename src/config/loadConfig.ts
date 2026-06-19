@@ -22,6 +22,9 @@ export interface AppConfig {
     maxMessages: number;
     keepRecent: number;
   };
+  viewer: {
+    port: number;
+  };
 }
 
 export function loadConfig(path = 'config/default.yaml'): AppConfig {
@@ -45,6 +48,9 @@ export function loadConfig(path = 'config/default.yaml'): AppConfig {
     conversation: {
       maxMessages: Number(raw.conversation?.maxMessages ?? 16),
       keepRecent: Number(raw.conversation?.keepRecent ?? 6),
+    },
+    viewer: {
+      port: Number(raw.viewer?.port ?? 3000),
     },
   };
 }

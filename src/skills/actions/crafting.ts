@@ -2,7 +2,7 @@ import type { Bot } from 'mineflayer';
 import type { Block } from 'prismarine-block';
 import type { Recipe } from 'prismarine-recipe';
 import type { Skill, SkillContext, SkillResult } from '../types';
-import { clampInt } from '../util';
+import { clampInt, withTimeout } from '../util';
 import { recordCraftSuccess } from '../../knowledge/CraftingExperience';
 import { searchOutward, walkToward } from '../../util/navigate';
 import { placeNear } from '../../util/building';
@@ -213,7 +213,7 @@ async function doCraft(
   for (let i = 0; i < craftCount; i++) {
     if (ctx.shouldStop?.()) break;
     try {
-      await bot.craft(recipe, 1, usedTable ?? undefined);
+      await withTimeout(bot.craft(recipe, 1, usedTable ?? undefined), 20000);
     } catch (err) {
       lastErr = err instanceof Error ? err.message : String(err);
       break;

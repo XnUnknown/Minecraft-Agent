@@ -1,9 +1,18 @@
 import type { Skill } from '../types';
-import { clampInt } from '../util';
+import { clampInt, withTimeout, TimeoutError } from '../util';
 import { equipBestToolForBlock } from '../../util/equip';
 import { searchOutward } from '../../util/navigate';
 
+/** Generous ceiling for walking to + mining ONE block. mineflayer-pathfinder can otherwise
+ *  spin forever recomputing partial paths when a block turns out unreachable (e.g. boxed in
+ *  by terrain it won't dig through) instead of erroring — without this the bot looks like it
+ *  "just stands there" partway through a big gather job, with nothing ever reported back to
+ *  the LLM so the loop never gets a chance to retry a different block or report failure. */
+const COLLECT_ONE_TIMEOUT_MS = 30000;
+
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+const key = (p: { x: number; y: number; z: number }): string => `${p.x},${p.y},${p.z}`;
 
 /** Suffixes shared by block "families" — every wood type has its own *_log, every ore its
  *  own *_ore, etc. A request for one variant should still succeed if a different variant
@@ -61,11 +70,17 @@ export const collectBlock: Skill = {
       await searchOutward(bot, isNearby, ctx.reflex, ctx.shouldStop);
     }
 
-    const collector = (bot as unknown as { collectBlock: { collect(b: unknown): Promise<void> } }).collectBlock;
+    const collector = (
+      bot as unknown as { collectBlock: { collect(b: unknown): Promise<void>; cancelTask?(): Promise<void> | void } }
+    ).collectBlock;
     const reflex = ctx.reflex;
     let collected = 0;
     let failures = 0;
     let actualName = blockType;
+    // Positions that timed out or errored — skip past them on the next pass instead of
+    // re-targeting the same unreachable block over and over until the failure cap gives up
+    // on the whole job (one truly stuck log shouldn't sink a "collect 64" request).
+    const skip = new Set<string>();
     while (collected < count && failures < 3 && !ctx.shouldStop?.()) {
       // If the reflex layer is fleeing/fighting, let it finish before we mine again,
       // rather than aborting the whole gather job after a scrap.
@@ -73,26 +88,40 @@ export const collectBlock: Skill = {
         await sleep(300);
         continue;
       }
-      let positions = exactId !== undefined ? bot.findBlocks({ matching: exactId, maxDistance: 48, count: 1 }) : [];
-      if (!positions.length && familyIds.length) {
-        positions = bot.findBlocks({ matching: familyIds, maxDistance: 48, count: 1 });
+      let positions = exactId !== undefined ? bot.findBlocks({ matching: exactId, maxDistance: 48, count: 10 }) : [];
+      if (positions.every((p) => skip.has(key(p))) && familyIds.length) {
+        positions = positions.concat(bot.findBlocks({ matching: familyIds, maxDistance: 48, count: 10 }));
       }
-      if (!positions.length) break;
-      const block = bot.blockAt(positions[0]);
-      if (!block) break;
+      const pos = positions.find((p) => !skip.has(key(p)));
+      if (!pos) break;
+      const block = bot.blockAt(pos);
+      if (!block) {
+        skip.add(key(pos));
+        continue;
+      }
       actualName = block.name;
       try {
         // Equip the fastest tool we own first, so breaking finishes quickly.
         await equipBestToolForBlock(bot, block);
-        await collector.collect(block);
+        await withTimeout(collector.collect(block), COLLECT_ONE_TIMEOUT_MS);
         collected += 1;
         failures = 0;
-      } catch {
+      } catch (err) {
         // Interrupted (often by reflex combat). Wait it out and retry instead of giving up.
         if (reflex?.isBusy()) {
           await sleep(300);
           continue;
         }
+        if (err instanceof TimeoutError) {
+          // The collect attempt is still running pathfinder/dig in the background — actually
+          // stop it before moving on, or it keeps fighting our next target underneath us.
+          try {
+            await collector.cancelTask?.();
+          } catch {
+            /* ignore */
+          }
+        }
+        skip.add(key(pos));
         failures += 1;
       }
     }

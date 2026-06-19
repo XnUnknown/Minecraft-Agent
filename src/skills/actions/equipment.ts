@@ -37,14 +37,17 @@ export const wearItem: Skill = {
   async run(bot, args) {
     const name = String(args.item ?? '').toLowerCase();
     const item = bot.inventory.items().find((i) => i.name === name || i.name.includes(name));
-    if (!item) return `I don't have any ${name} to wear.`;
+    if (!item) return { ok: false, message: `I don't have any ${name} to wear.` };
 
     const destination = destinationFor(item.name);
     try {
       await bot.equip(item, destination);
     } catch (err) {
-      return `Couldn't equip ${item.name}: ${err instanceof Error ? err.message : String(err)}`;
+      return {
+        ok: false,
+        message: `Couldn't equip ${item.name}: ${err instanceof Error ? err.message : String(err)}`,
+      };
     }
-    return `Equipped ${item.name}.`;
+    return { ok: true, message: `Equipped ${item.name}.` };
   },
 };

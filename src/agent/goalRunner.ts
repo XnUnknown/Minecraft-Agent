@@ -4,9 +4,21 @@ import type { LLMProvider } from '../llm/types';
 import type { Perception } from '../perception/Perception';
 import type { ReflexLayer } from '../reflex/ReflexLayer';
 import { SkillRegistry } from '../skills/registry';
-import { buildSystemPrompt, buildJsonSystemPrompt, parseJsonPlan, type PlanStep } from '../llm/promptBuilder';
+import {
+  buildSystemPrompt,
+  buildJsonSystemPrompt,
+  parseJsonPlan,
+  describeTranscript,
+  type PlanStep,
+  type TranscriptEntry,
+} from '../llm/promptBuilder';
 import { ConversationMemory, type ConversationMemoryOptions } from './ConversationMemory';
+import { contextBlock as craftingContextBlock } from '../knowledge/CraftingExperience';
+import { sendChat } from '../util/chat';
 import { logger } from '../util/logger';
+
+/** Batches between an LLM call and execution; capped to bound replan cost on repeated failure. */
+const MAX_BATCHES = 4;
 
 interface Task {
   requestedBy: string;
@@ -149,6 +161,13 @@ export class GoalRunner {
     }
   }
 
+  /**
+   * Runs one task as a sequence of LLM-planned batches. Each batch executes in order and
+   * stops at the first failed step (later steps usually depended on it); a failure feeds the
+   * whole transcript back to the LLM so it can issue a corrective plan or give up with an
+   * explanation, instead of blindly continuing a plan whose premise just broke. Implements
+   * ARCHITECTURE_PLAN.md §5.3b/§5.4 ("batch executor" + replan-on-failure).
+   */
   private async runTask(bot: Bot, task: Task): Promise<void> {
     let provider: LLMProvider;
     try {
@@ -158,66 +177,125 @@ export class GoalRunner {
       return;
     }
 
-    const observation = this.perception.observe();
     const tools = this.skills.toolDefs();
     const mode = this.llm.toolMode('planner');
     const temperature = this.llm.temperature('planner');
-    const summary = this.memory.summaryText();
+    const maxTokens = this.llm.maxTokens('planner') ?? 2048;
+    const system = withContext(
+      mode === 'json' ? buildJsonSystemPrompt(bot.username, tools) : buildSystemPrompt(bot.username),
+      this.memory.summaryText(),
+      craftingContextBlock(),
+    );
 
-    const finalUser = {
+    const observation = this.perception.observe();
+    const baseUser = {
       role: 'user' as const,
       content: `Observation:\n${observation}\n\nPlayer "${task.requestedBy}" says: ${task.message}`,
     };
-    const messages = [...this.memory.recent(), finalUser];
-
-    const res = await provider.chat({
-      system: withSummary(
-        mode === 'json' ? buildJsonSystemPrompt(bot.username, tools) : buildSystemPrompt(bot.username),
-        summary,
-      ),
-      messages,
-      tools: mode === 'json' ? [] : tools,
-      temperature,
-    });
-
-    const plan: PlanStep[] =
-      mode === 'json' ? parseJsonPlan(res.text) : res.toolCalls.map((c) => ({ name: c.name, args: c.args }));
+    let messages = [...this.memory.recent(), baseUser];
 
     const ctx = { requestedBy: task.requestedBy, reflex: this.reflex, shouldStop: (): boolean => this.cancel };
+    const transcript: TranscriptEntry[] = [];
     let assistantRecord = '';
+    let finalMessage: string | null = null;
+    let willSpeak = false;
+    let cancelled = false;
 
-    if (plan.length === 0) {
-      const say = res.text.trim() ? res.text.trim().slice(0, 256) : "I'm not sure how to help with that yet.";
-      bot.chat(say);
-      assistantRecord = say;
-    } else {
-      if (plan.length > 1) logger.info(`Executing ${plan.length}-step plan for "${task.message}".`);
-      // sayInChat/reportStatus already speak for themselves; everything else (collectBlock,
-      // tossItem, attackNearestMob, ...) only returns a result string that used to go
-      // straight into memory and nowhere else — the bot would work in total silence. Collect
-      // those results and speak them as a wrap-up unless the plan already spoke on its own.
-      const resultsForChat: string[] = [];
-      const willSpeak = plan.some((p) => p.name === 'sayInChat');
+    for (let batch = 0; batch < MAX_BATCHES; batch++) {
+      const res = await provider.chat({
+        system,
+        messages,
+        tools: mode === 'json' ? [] : tools,
+        temperature,
+        maxTokens,
+      });
+      const plan: PlanStep[] =
+        mode === 'json' ? parseJsonPlan(res.text) : res.toolCalls.map((c) => ({ name: c.name, args: c.args }));
+
+      if (plan.length === 0) {
+        finalMessage = res.text.trim();
+        break;
+      }
+      if (plan.length > 1 || batch > 0) {
+        logger.info(`Executing ${plan.length}-step plan (batch ${batch + 1}) for "${task.message}".`);
+      }
+
+      let batchFailed = false;
       for (let i = 0; i < plan.length; i++) {
         if (this.cancel) {
-          assistantRecord += '(cancelled) ';
-          resultsForChat.push('(cancelled)');
+          cancelled = true;
           break;
         }
         const step = plan[i];
-        if (this.current) this.current.step = `step ${i + 1}/${plan.length}: ${step.name}`;
+        if (step.name === 'sayInChat') willSpeak = true;
+        if (this.current) this.current.step = `batch ${batch + 1} step ${i + 1}/${plan.length}: ${step.name}`;
         const result = await this.skills.execute(bot, step.name, step.args, ctx);
-        assistantRecord += `${describeAction(step.name, step.args, result)} `;
-        if (step.name !== 'sayInChat' && step.name !== 'reportStatus') resultsForChat.push(result);
+        transcript.push({ tool: step.name, args: step.args, ok: result.ok, message: result.message });
+        assistantRecord += `${describeAction(step.name, step.args, result.message)} `;
+        if (!result.ok) {
+          batchFailed = true;
+          break;
+        }
       }
-      if (!willSpeak && resultsForChat.length) {
-        bot.chat(resultsForChat.join(' ').slice(0, 300));
+
+      if (cancelled || !batchFailed) break; // done, or no point continuing this run
+
+      // Replan: recap the whole transcript so far and let the LLM decide what to do next.
+      messages = [
+        ...this.memory.recent(),
+        baseUser,
+        { role: 'user' as const, content: `Tool results so far:\n${describeTranscript(transcript)}` },
+      ];
+    }
+
+    if (cancelled) {
+      assistantRecord += '(cancelled) ';
+    } else {
+      let reply = finalMessage?.trim() ?? '';
+      if (!reply && !willSpeak) {
+        reply = transcript.length
+          ? await this.composeFinalReply(task, transcript)
+          : "I'm not sure how to help with that yet.";
+      }
+      if (reply) {
+        sendChat(bot, reply);
+        assistantRecord += reply;
       }
     }
 
     this.memory.addUser(task.requestedBy, task.message);
     this.memory.addAssistant(assistantRecord.trim() || '(no action)');
     await this.memory.maybeCompact(this.summarizer());
+  }
+
+  /**
+   * Composes one natural-language wrap-up from a finished transcript via the cheap "fast"
+   * role, instead of mechanically joining raw tool-result strings — falls back to that raw
+   * join if the call errors (e.g. "fast" role unavailable).
+   */
+  private async composeFinalReply(task: Task, transcript: TranscriptEntry[]): Promise<string> {
+    const raw = transcript.map((t) => t.message).join(' ').slice(0, 300);
+    try {
+      const res = await this.summarizer().chat({
+        system:
+          'You are a Minecraft bot reporting back to a player after finishing actions. Reply in 1-2 ' +
+          'short, friendly sentences summarizing the outcome — mention any failures honestly. No preamble.',
+        messages: [
+          {
+            role: 'user',
+            content:
+              `Player "${task.requestedBy}" asked: "${task.message}"\n\n` +
+              `Actions taken:\n${describeTranscript(transcript)}\n\nCompose the reply.`,
+          },
+        ],
+        tools: [],
+        temperature: 0.3,
+        maxTokens: 150,
+      });
+      return res.text.trim() || raw;
+    } catch {
+      return raw;
+    }
   }
 
   /** Cheap model for summarization; falls back to the planner if "fast" isn't set. */
@@ -246,8 +324,11 @@ function normalize(message: string): string {
   return message.trim().toLowerCase().replace(/[!?.]+$/g, '').replace(/\s+/g, ' ');
 }
 
-function withSummary(system: string, summary: string): string {
-  return summary ? `${system}\n\nConversation summary so far:\n${summary}` : system;
+function withContext(system: string, summary: string, craftingNotes: string): string {
+  const parts = [system];
+  if (craftingNotes) parts.push(`Known crafting recipes (learned from past successes):\n${craftingNotes}`);
+  if (summary) parts.push(`Conversation summary so far:\n${summary}`);
+  return parts.join('\n\n');
 }
 
 function describeAction(name: string, args: Record<string, unknown>, result: string): string {

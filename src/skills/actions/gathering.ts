@@ -67,7 +67,7 @@ export const collectBlock: Skill = {
     const exactId = blocksByName[blockType]?.id;
     const familyIds = familyIdsFor(blockType, blocksByName);
     if (exactId === undefined && familyIds.length === 0) {
-      return `I don't know a block called "${blockType}".`;
+      return { ok: false, message: `I don't know a block called "${blockType}".` };
     }
     const allIds = exactId !== undefined ? [exactId, ...familyIds] : familyIds;
 
@@ -112,12 +112,19 @@ export const collectBlock: Skill = {
     }
 
     if (collected === 0) {
-      return familyIds.length
-        ? `Couldn't find any ${blockType} (or a similar variant) within range, even after looking around.`
-        : `Couldn't collect any ${blockType} (none reachable nearby).`;
+      return {
+        ok: false,
+        message: familyIds.length
+          ? `Couldn't find any ${blockType} (or a similar variant) within range, even after looking around.`
+          : `Couldn't collect any ${blockType} (none reachable nearby).`,
+      };
     }
-    return actualName === blockType
-      ? `Collected ${collected}x ${actualName}.`
-      : `Collected ${collected}x ${actualName} (closest match for ${blockType}).`;
+    return {
+      ok: true,
+      message:
+        actualName === blockType
+          ? `Collected ${collected}x ${actualName}.`
+          : `Collected ${collected}x ${actualName} (closest match for ${blockType}).`,
+    };
   },
 };

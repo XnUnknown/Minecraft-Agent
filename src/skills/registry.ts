@@ -1,5 +1,5 @@
 import type { Bot } from 'mineflayer';
-import type { Skill, SkillContext } from './types';
+import type { Skill, SkillContext, SkillResult } from './types';
 import type { ToolDef } from '../llm/types';
 import { goToPlayer, goToCoordinates, followPlayer, stopMoving } from './actions/navigation';
 import { reportStatus } from './actions/status';
@@ -52,17 +52,17 @@ export class SkillRegistry {
     name: string,
     args: Record<string, unknown>,
     ctx: SkillContext,
-  ): Promise<string> {
+  ): Promise<SkillResult> {
     const skill = this.map.get(name);
-    if (!skill) return `Unknown tool "${name}".`;
+    if (!skill) return { ok: false, message: `Unknown tool "${name}".` };
     try {
       const result = await skill.run(bot, args, ctx);
-      logger.info(`skill ${name}(${JSON.stringify(args)}) -> ${result}`);
+      logger.info(`skill ${name}(${JSON.stringify(args)}) -> ${result.message}`);
       return result;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error(`skill ${name} failed: ${msg}`);
-      return `Tool ${name} failed: ${msg}`;
+      return { ok: false, message: `Tool ${name} failed: ${msg}` };
     }
   }
 }

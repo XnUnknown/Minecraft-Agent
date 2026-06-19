@@ -12,6 +12,7 @@ roles:
     model: gemma4:31b
     toolCalling: json       # Gemma has no native tool calling -> use JSON fallback
     temperature: 0.4
+    maxTokens: 2048         # generous headroom for plans/reasoning (was silently provider-default)
 
   fast:
     provider: ollama

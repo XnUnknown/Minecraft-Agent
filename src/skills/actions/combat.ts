@@ -41,7 +41,10 @@ export const attackNearestMob: Skill = {
       ctx.reflex?.setSuppressDefense(false);
     }
 
-    if (killed > 0) return `Defeated ${killed} monster(s).`;
-    return mobType ? `No ${mobType} nearby to fight.` : 'No monsters nearby to fight.';
+    if (killed > 0) return { ok: true, message: `Defeated ${killed} monster(s).` };
+    return {
+      ok: false,
+      message: mobType ? `No ${mobType} nearby to fight.` : 'No monsters nearby to fight.',
+    };
   },
 };

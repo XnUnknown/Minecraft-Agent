@@ -19,14 +19,14 @@ export const tossItem: Skill = {
   async run(bot, args) {
     const name = String(args.item ?? '').toLowerCase();
     const item = bot.inventory.items().find((i) => i.name === name || i.name.includes(name));
-    if (!item) return `I don't have any ${name}.`;
+    if (!item) return { ok: false, message: `I don't have any ${name}.` };
 
     const count = clampInt(args.count, 1, item.count, item.count);
     try {
       await bot.toss(item.type, null, count);
     } catch (err) {
-      return `Couldn't drop ${item.name}: ${err instanceof Error ? err.message : String(err)}`;
+      return { ok: false, message: `Couldn't drop ${item.name}: ${err instanceof Error ? err.message : String(err)}` };
     }
-    return `Dropped ${count}x ${item.name}.`;
+    return { ok: true, message: `Dropped ${count}x ${item.name}.` };
   },
 };

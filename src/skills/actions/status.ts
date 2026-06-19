@@ -14,6 +14,6 @@ export const reportStatus: Skill = {
       : 'empty';
     const report = `Pos (${p.x.toFixed(0)}, ${p.y.toFixed(0)}, ${p.z.toFixed(0)}); HP ${bot.health}/20; food ${bot.food}/20; inv: ${inv}.`;
     bot.chat(report);
-    return report;
+    return { ok: true, message: report };
   },
 };

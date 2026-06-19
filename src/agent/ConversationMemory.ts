@@ -70,7 +70,7 @@ export class ConversationMemory {
         messages: [{ role: 'user', content: prompt }],
         tools: [],
         temperature: 0.2,
-        maxTokens: 256,
+        maxTokens: 400,
       });
       const next = res.text.trim();
       if (next) {

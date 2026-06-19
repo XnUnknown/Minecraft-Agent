@@ -16,9 +16,15 @@ export interface SkillContext {
   shouldStop?: () => boolean;
 }
 
+/** Structured outcome of a skill run — lets the executor react to failure, not just guess from prose. */
+export interface SkillResult {
+  ok: boolean;
+  message: string;
+}
+
 /** A callable agent capability: its tool schema + implementation. */
 export interface Skill {
   def: ToolDef;
-  /** Runs the skill; returns a short human-readable result string. */
-  run(bot: Bot, args: Record<string, unknown>, ctx: SkillContext): Promise<string>;
+  /** Runs the skill; returns whether it succeeded plus a short human-readable message. */
+  run(bot: Bot, args: Record<string, unknown>, ctx: SkillContext): Promise<SkillResult>;
 }

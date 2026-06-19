@@ -13,6 +13,9 @@ export function buildSystemPrompt(botName: string): string {
     `- The Observation lists exact block names actually nearby ("Notable blocks") and exact`,
     `  entity names — use those exact names as tool arguments instead of guessing a generic`,
     `  variant (e.g. dark_oak_log, not oak_log, if that's what's listed).`,
+    `- A "Tool results so far" message means an earlier step in this task just failed —`,
+    `  decide whether to call more tools to recover, or reply in chat explaining what`,
+    `  happened. Don't blindly repeat steps that depended on the one that failed.`,
   ].join('\n');
 }
 
@@ -55,6 +58,9 @@ export function buildJsonSystemPrompt(botName: string, tools: ToolDef[]): string
     `  tool, collectBlock/craftItem the materials first as earlier steps).`,
     `- "wear/put on/equip X" -> wearItem. "trade (with the villager/trader) for X" ->`,
     `  tradeWithVillager.`,
+    `- If the latest message is "Tool results so far", a previous step in THIS task failed —`,
+    `  decide whether to emit a NEW corrective plan, or if nothing more can be done, output`,
+    `  {"plan": []} and explain why in plain prose instead. Don't re-emit the same plan.`,
     ``,
     `Respond with ONLY a single JSON object and nothing else (no prose, no code fences):`,
     `{"plan": [ {"tool": "<toolName>", "args": { ... }}, ... ]}`,
@@ -73,6 +79,24 @@ export function buildJsonSystemPrompt(botName: string, tools: ToolDef[]): string
 export interface PlanStep {
   name: string;
   args: Record<string, unknown>;
+}
+
+/** One executed tool call and its outcome, for recapping a batch to the LLM after a failure. */
+export interface TranscriptEntry {
+  tool: string;
+  args: Record<string, unknown>;
+  ok: boolean;
+  message: string;
+}
+
+/** Formats a transcript as a numbered recap for a replanning turn. */
+export function describeTranscript(transcript: TranscriptEntry[]): string {
+  return transcript
+    .map((t, i) => {
+      const argsStr = Object.keys(t.args).length ? JSON.stringify(t.args) : '{}';
+      return `${i + 1}. ${t.tool}(${argsStr}) -> ${t.ok ? 'OK' : 'FAILED'}: ${t.message}`;
+    })
+    .join('\n');
 }
 
 /** Extracts a {"tool","args"} action from a JSON-mode model's text reply. */

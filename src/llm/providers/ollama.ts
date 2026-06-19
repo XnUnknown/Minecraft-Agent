@@ -1,3 +1,4 @@
+import { logger } from '../../util/logger';
 import type { ChatRequest, ChatResponse, LLMProvider, ToolDef } from '../types';
 
 export interface OllamaProviderOptions {
@@ -29,7 +30,9 @@ export class OllamaProvider implements LLMProvider {
     const body: Record<string, unknown> = {
       model: this.model,
       stream: false,
-      options: { temperature: req.temperature ?? 0.4 },
+      // num_predict is Ollama's max-output-tokens knob; without it, some models default to a
+      // tiny generation budget (as low as 128), silently truncating/garbling JSON tool plans.
+      options: { temperature: req.temperature ?? 0.4, num_predict: req.maxTokens ?? 1024 },
       messages: [
         { role: 'system', content: req.system },
         ...req.messages.map((m) => ({ role: m.role, content: m.content })),
@@ -60,6 +63,9 @@ export class OllamaProvider implements LLMProvider {
             : (tc.function?.arguments ?? {}),
       }))
       .filter((c) => Boolean(c.name));
+    logger.info(`Tool calls: ${JSON.stringify(toolCalls)}`);
+    logger.info(`Message: ${msg.content}`);
+    logger.info(`Raw: ${JSON.stringify(data)}`);
     return { text: msg.content ?? '', toolCalls, raw: data };
   }
 }

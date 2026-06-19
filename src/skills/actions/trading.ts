@@ -48,7 +48,7 @@ export const tradeWithVillager: Skill = {
     const times = clampInt(args.count, 1, 64, 1);
 
     const target = nearestTrader(bot, 48);
-    if (!target) return 'No villager or wandering trader nearby.';
+    if (!target) return { ok: false, message: 'No villager or wandering trader nearby.' };
 
     const arrived = await walkToward(
       bot,
@@ -57,16 +57,16 @@ export const tradeWithVillager: Skill = {
       ctx.reflex,
       ctx.shouldStop,
     );
-    if (!arrived) return "Couldn't reach the trader.";
+    if (!arrived) return { ok: false, message: "Couldn't reach the trader." };
 
     const entity = bot.entities[target.id];
-    if (!entity) return 'Lost track of the trader.';
+    if (!entity) return { ok: false, message: 'Lost track of the trader.' };
 
     let villager;
     try {
       villager = await bot.openVillager(entity);
     } catch (err) {
-      return `Couldn't open trade: ${err instanceof Error ? err.message : String(err)}`;
+      return { ok: false, message: `Couldn't open trade: ${err instanceof Error ? err.message : String(err)}` };
     }
 
     try {
@@ -74,13 +74,16 @@ export const tradeWithVillager: Skill = {
         (t) => !t.tradeDisabled && (!wanted || t.outputItem.name.toLowerCase().includes(wanted)),
       );
       if (tradeIndex === -1) {
-        return wanted ? `This trader doesn't offer ${wanted}.` : 'This trader has no available trades.';
+        return {
+          ok: false,
+          message: wanted ? `This trader doesn't offer ${wanted}.` : 'This trader has no available trades.',
+        };
       }
       const outputName = villager.trades[tradeIndex].outputItem.name;
       await bot.trade(villager, tradeIndex, times);
-      return `Traded for ${times}x ${outputName}.`;
+      return { ok: true, message: `Traded for ${times}x ${outputName}.` };
     } catch (err) {
-      return `Trade failed: ${err instanceof Error ? err.message : String(err)}`;
+      return { ok: false, message: `Trade failed: ${err instanceof Error ? err.message : String(err)}` };
     } finally {
       villager.close();
     }

@@ -1,8 +1,7 @@
-import type { Bot } from 'mineflayer';
-import type { Skill, SkillContext } from '../types';
+import type { Skill } from '../types';
 import { clampInt } from '../util';
 import { equipBestToolForBlock } from '../../util/equip';
-import { walkToward } from '../../util/navigate';
+import { searchOutward } from '../../util/navigate';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -15,26 +14,12 @@ const FAMILY_SUFFIXES = [
   '_concrete', '_terracotta', '_stained_glass', '_bed',
 ];
 
-function familyIdsFor(blockType: string, blocksByName: Record<string, { id: number }>): number[] {
+export function familyIdsFor(blockType: string, blocksByName: Record<string, { id: number }>): number[] {
   const suffix = FAMILY_SUFFIXES.find((s) => blockType.endsWith(s));
   if (!suffix) return [];
   return Object.entries(blocksByName)
     .filter(([name]) => name.endsWith(suffix))
     .map(([, b]) => b.id);
-}
-
-/** Nothing matching is loaded nearby — walk a few legs outward and rescan after each,
- *  instead of giving up immediately. Bounded so a genuinely absent block fails promptly. */
-async function exploreForBlocks(bot: Bot, ids: number[], ctx: SkillContext): Promise<boolean> {
-  const legs: Array<[number, number]> = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-  for (const [dx, dz] of legs) {
-    if (ctx.shouldStop?.()) return false;
-    if (bot.findBlocks({ matching: ids, maxDistance: 48, count: 1 }).length) return true;
-    const base = bot.entity.position;
-    const target = { x: base.x + dx * 28, y: base.y, z: base.z + dz * 28 };
-    await walkToward(bot, () => target, 3, ctx.reflex, ctx.shouldStop, 12000);
-  }
-  return bot.findBlocks({ matching: ids, maxDistance: 48, count: 1 }).length > 0;
 }
 
 export const collectBlock: Skill = {
@@ -71,8 +56,9 @@ export const collectBlock: Skill = {
     }
     const allIds = exactId !== undefined ? [exactId, ...familyIds] : familyIds;
 
-    if (!bot.findBlocks({ matching: allIds, maxDistance: 48, count: 1 }).length) {
-      await exploreForBlocks(bot, allIds, ctx);
+    const isNearby = (): boolean => bot.findBlocks({ matching: allIds, maxDistance: 48, count: 1 }).length > 0;
+    if (!isNearby()) {
+      await searchOutward(bot, isNearby, ctx.reflex, ctx.shouldStop);
     }
 
     const collector = (bot as unknown as { collectBlock: { collect(b: unknown): Promise<void> } }).collectBlock;

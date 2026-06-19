@@ -7,9 +7,10 @@ import { sayInChat } from './actions/chat';
 import { collectBlock } from './actions/gathering';
 import { attackNearestMob } from './actions/combat';
 import { tossItem } from './actions/inventory';
-import { craftItem } from './actions/crafting';
+import { craftItem, getRecipe } from './actions/crafting';
 import { wearItem } from './actions/equipment';
 import { tradeWithVillager } from './actions/trading';
+import { searchWide } from './actions/search';
 import { logger } from '../util/logger';
 
 /**
@@ -27,8 +28,10 @@ const SKILLS: Skill[] = [
   attackNearestMob,
   tossItem,
   craftItem,
+  getRecipe,
   wearItem,
   tradeWithVillager,
+  searchWide,
 ];
 
 export class SkillRegistry {

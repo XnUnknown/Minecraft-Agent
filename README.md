@@ -12,10 +12,17 @@ We build **one stage at a time** (see the roadmap). This README covers the curre
 
 ---
 
-## Current stage: 1 — Simple join agent
+## Current stage: 6 — Agentic loop (chat-driven tasks)
 
-The bot connects to your local server, spawns, greets in chat, and auto-reconnects.
-No AI yet — this just proves the body connects.
+The bot connects, perceives its surroundings (blocks/entities/inventory, refreshed ~3 Hz),
+and turns player chat into queued tasks an LLM plans and executes step by step. A 20 Hz
+reflex layer keeps it alive between LLM calls (auto-eat, flee creepers, self-defend) without
+costing an API call. Real action skills: navigation, gathering, combat, crafting (self-healing
+— it pre-crafts missing ingredients and gathers/builds its own crafting table instead of just
+failing), equipping, villager trading, and a wide-area search for things not nearby. If a step
+in a plan fails, the agent stops that batch, recaps what happened to the LLM, and either
+recovers with a corrective plan or explains the failure in chat — instead of blindly running
+the rest of a stale plan. See `BUILD_ROADMAP.md` for exactly what's done vs. still ahead.
 
 ### Prerequisites
 - **Node.js 20+**

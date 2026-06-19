@@ -9,6 +9,7 @@ import {
   buildJsonSystemPrompt,
   parseJsonPlan,
   describeTranscript,
+  extractJsonProse,
   type PlanStep,
   type TranscriptEntry,
 } from '../llm/promptBuilder';
@@ -217,7 +218,9 @@ export class GoalRunner {
         mode === 'json' ? parseJsonPlan(res.text) : res.toolCalls.map((c) => ({ name: c.name, args: c.args }));
 
       if (plan.length === 0) {
-        finalMessage = res.text.trim();
+        // JSON mode's "done" turn is often bare JSON with no prose (e.g. `{"plan": []}`) —
+        // extract any real prose instead of treating the raw JSON text as a chat message.
+        finalMessage = mode === 'json' ? extractJsonProse(res.text) : res.text.trim();
         break;
       }
 
@@ -266,7 +269,10 @@ export class GoalRunner {
       assistantRecord += '(cancelled) ';
     } else {
       let reply = finalMessage?.trim() ?? '';
-      if (!reply) {
+      // If every action taken was just talking, sayInChat already said what needed saying —
+      // a composed wrap-up would just awkwardly repeat the greeting.
+      const onlyTalked = transcript.length > 0 && transcript.every((t) => t.tool === 'sayInChat');
+      if (!reply && !onlyTalked) {
         reply = transcript.length
           ? await this.composeFinalReply(task, transcript)
           : "I'm not sure how to help with that yet.";

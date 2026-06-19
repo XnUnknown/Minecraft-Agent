@@ -33,3 +33,13 @@ once that exists, this file gets ingested once and the raw injection below can s
 - Ingredients per craft: 4x spruce_planks, 2x stick
 - Yields per craft: 3x spruce_fence
 - Requires crafting table: yes
+
+## sugar
+- Ingredients per craft: 1x sugar_cane
+- Yields per craft: 1x sugar
+- Requires crafting table: no
+
+## cake
+- Ingredients per craft: 3x milk_bucket, 2x sugar, 1x egg, 3x wheat
+- Yields per craft: 1x cake
+- Requires crafting table: yes

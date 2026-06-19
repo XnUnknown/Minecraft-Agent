@@ -120,6 +120,20 @@ export function describeTranscript(transcript: TranscriptEntry[]): string {
     .join('\n');
 }
 
+/**
+ * Strips the {"plan":...} JSON object out of a JSON-mode reply, leaving any prose the model
+ * wrote alongside it. A "done" turn from this model is usually bare JSON with no prose at
+ * all (e.g. `{"plan": []}`) — without this, that literal JSON text gets spoken to the player
+ * verbatim instead of being recognized as "nothing to say here."
+ */
+export function extractJsonProse(text: string): string {
+  const cleaned = text.replace(/```(?:json)?/gi, '').trim();
+  const objText = extractBalanced(cleaned, '{', '}');
+  if (!objText) return cleaned;
+  const idx = cleaned.indexOf(objText);
+  return (cleaned.slice(0, idx) + cleaned.slice(idx + objText.length)).trim();
+}
+
 /** Extracts a {"tool","args"} action from a JSON-mode model's text reply. */
 export function parseJsonToolCall(text: string): PlanStep | null {
   const steps = parseJsonPlan(text);

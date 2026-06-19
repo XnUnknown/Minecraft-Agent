@@ -7,6 +7,7 @@ import type { ReflexLayer } from '../reflex/ReflexLayer';
 import { logger } from '../util/logger';
 import { GoalRunner } from '../agent/goalRunner';
 import { startPov, stopPov } from '../viewer/PovViewer';
+import { wasRecentlySent } from '../util/chat';
 
 const { goals } = pathfinderPkg;
 
@@ -39,7 +40,10 @@ export function registerChatCommands(
   });
 
   bot.on('chat', (username, message) => {
-    if (username === bot.username) return;
+    if (username.trim().toLowerCase() === bot.username.trim().toLowerCase()) return;
+    // Backstop for servers whose chat-formatting plugins rewrite the echoed username on our
+    // own messages — without this the agent can end up "hearing" and reacting to itself.
+    if (wasRecentlySent(message)) return;
 
     const cmd = message.trim().toLowerCase();
     if (MANUAL.has(cmd)) {

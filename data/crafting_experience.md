@@ -48,3 +48,8 @@ once that exists, this file gets ingested once and the raw injection below can s
 - Ingredients per craft: 1x spruce_log
 - Yields per craft: 4x spruce_planks
 - Requires crafting table: no
+
+## oak_planks
+- Ingredients per craft: 1x oak_log
+- Yields per craft: 4x oak_planks
+- Requires crafting table: no

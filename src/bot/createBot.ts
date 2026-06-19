@@ -7,6 +7,7 @@ import { Blackboard } from '../blackboard/Blackboard';
 import { Perception } from '../perception/Perception';
 import { ReflexLayer } from '../reflex/ReflexLayer';
 import { configureMovements, StuckMonitor } from './movement';
+import { recordSent } from '../util/chat';
 
 /**
  * Create the Mineflayer bot, register plugins, wire chat commands and lifecycle events.
@@ -24,6 +25,15 @@ export function createBot(config: AppConfig): Bot {
     auth: config.server.auth,
     version: config.server.version,
   });
+
+  // Wrap once here so EVERY send path (direct bot.chat() calls, sendChat()'s chunking, plugins)
+  // is tracked automatically — the chat listener uses this to recognize and skip our own
+  // echoed messages instead of treating them as a new player command (see chatCommands.ts).
+  const sendChatMessage = bot.chat.bind(bot);
+  bot.chat = (message: string): void => {
+    recordSent(message);
+    sendChatMessage(message);
+  };
 
   const blackboard = new Blackboard();
   const perception = new Perception(bot, blackboard);

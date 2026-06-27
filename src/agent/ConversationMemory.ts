@@ -55,7 +55,7 @@ export class ConversationMemory {
     const prompt = [
       this.summary ? `Existing summary:\n${this.summary}\n` : '',
       `Update the running summary of this Minecraft conversation. Capture durable facts,`,
-      `player preferences, named locations, and ongoing tasks. Keep it under 120 words.`,
+      `player preferences, named locations, and ongoing tasks. Keep it under 500 words.`,
       `Output ONLY the summary text, no preamble.`,
       ``,
       `New history to fold in:`,
@@ -70,7 +70,7 @@ export class ConversationMemory {
         messages: [{ role: 'user', content: prompt }],
         tools: [],
         temperature: 0.2,
-        maxTokens: 400,
+        maxTokens: 256,
       });
       const next = res.text.trim();
       if (next) {

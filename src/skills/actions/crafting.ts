@@ -39,6 +39,13 @@ export const craftItem: Skill = {
       properties: {
         item: { type: 'string', description: 'Item to craft, e.g. stick, torch, wooden_pickaxe.' },
         count: { type: 'integer', description: 'How many to craft (default 1).' },
+        wideSearch: {
+          type: 'boolean',
+          description:
+            'If true (default), roam beyond the immediate area to gather any missing raw ' +
+            'materials and to find/make a crafting table. If false, only use materials and ' +
+            'blocks already within render range and report what was missing instead.',
+        },
       },
       required: ['item'],
       additionalProperties: false,
@@ -47,9 +54,10 @@ export const craftItem: Skill = {
   async run(bot, args, ctx) {
     const itemName = String(args.item ?? '').toLowerCase();
     const count = clampInt(args.count, 1, 64, 1);
+    const wideSearch = args.wideSearch !== false;
     const session: TableSession = { table: null, placedByUs: false };
 
-    const result = await resolveAndCraft(bot, itemName, count, ctx, 0, session);
+    const result = await resolveAndCraft(bot, itemName, count, ctx, 0, session, wideSearch);
 
     if (session.placedByUs) {
       const cleanup = await collectTableBack(bot, session, ctx);
@@ -64,9 +72,10 @@ export const getRecipe: Skill = {
     name: 'getRecipe',
     description:
       'Check crafting recipes without crafting anything. With no args, lists items craftable ' +
-      'right now from current inventory. With "item", reports its ingredients, yield, table ' +
-      'requirement, and exactly what is missing if it cannot be crafted yet — check this ' +
-      'before guessing at ingredient names or quantities.',
+      'right now from current inventory. With "item", reports its direct ingredients, yield, ' +
+      'table requirement, AND the full recursive list of raw base materials it ultimately ' +
+      'needs (expanding every craftable intermediate down to logs/ores/etc.) plus how many ' +
+      'of each you still need — check this before guessing at ingredients or quantities.',
     parameters: {
       type: 'object',
       properties: {
@@ -109,12 +118,55 @@ export const getRecipe: Skill = {
     const tableNote = recipe.requiresTable ? 'needs a crafting table' : 'no table needed';
     const base = `${itemName}: ${ingredients.join(' + ') || 'no ingredients'} -> ${recipe.result.count}x ${itemName} (${tableNote}).`;
 
+    // Full recursive base-material breakdown — what raw resources this ultimately bottoms out
+    // in, all the way down, and how much of each is still missing from inventory.
+    const raw = new Map<string, number>();
+    rawRequirements(bot, itemName, 1, table, 0, raw);
+    const rawParts = [...raw.entries()].map(([name, need]) => {
+      const id = bot.registry.itemsByName[name]?.id;
+      const have = id !== undefined ? bot.inventory.count(id, null) : 0;
+      const short = Math.max(0, need - have);
+      return short > 0 ? `${need}x ${name} (need ${short} more)` : `${need}x ${name} (have)`;
+    });
+    const rawNote = rawParts.length ? ` Base materials needed: ${rawParts.join(', ')}.` : '';
+
     const craftableNow = bot.recipesFor(itemData.id, null, 1, table).length > 0;
     return craftableNow
-      ? { ok: true, message: `${base} Craftable right now.` }
-      : { ok: true, message: `${base} Missing ${describeMissing(bot, recipe, 1)}.` };
+      ? { ok: true, message: `${base} Craftable right now.${rawNote}` }
+      : { ok: true, message: `${base} Missing ${describeMissing(bot, recipe, 1)}.${rawNote}` };
   },
 };
+
+/**
+ * Recursively expands `itemName` into the raw (un-craftable) resources it ultimately needs,
+ * accounting for each recipe's yield, accumulating totals into `into`. Bottoms out on items
+ * with no recipe (raw/world resources). Depth-capped so an oddly self-referential recipe
+ * can't recurse forever — it just records that item as raw at the cap.
+ */
+function rawRequirements(
+  bot: Bot,
+  itemName: string,
+  count: number,
+  table: Block | null,
+  depth: number,
+  into: Map<string, number>,
+): void {
+  const add = (): void => {
+    into.set(itemName, (into.get(itemName) ?? 0) + count);
+  };
+  if (depth > 6) return add();
+  const itemData = bot.registry.itemsByName[itemName];
+  if (!itemData) return add();
+  const recipe = bot.recipesAll(itemData.id, null, table ?? true)[0];
+  if (!recipe) return add();
+  const craftCount = Math.ceil(count / recipe.result.count);
+  for (const d of recipe.delta) {
+    if (d.count >= 0) continue;
+    const name = bot.registry.items[d.id]?.name;
+    if (!name) continue;
+    rawRequirements(bot, name, -d.count * craftCount, table, depth + 1, into);
+  }
+}
 
 function nearbyTable(bot: Bot): Block | null {
   const tableId = bot.registry.blocksByName[TABLE_NAME]?.id;
@@ -144,6 +196,7 @@ async function getTable(
   notes: string[],
   required: boolean,
   session: TableSession,
+  wideSearch: boolean,
 ): Promise<Block | null> {
   // Reuse the table this job already secured, if it's still actually there.
   if (session.table) {
@@ -159,7 +212,7 @@ async function getTable(
     return cheap;
   }
   if (!required) return null;
-  return findOrMakeTable(bot, ctx, depth, notes, session);
+  return findOrMakeTable(bot, ctx, depth, notes, session, wideSearch);
 }
 
 /** Searches further afield for an existing table, then crafts + places our own as a last resort. */
@@ -169,9 +222,12 @@ async function findOrMakeTable(
   depth: number,
   notes: string[],
   session: TableSession,
+  wideSearch: boolean,
 ): Promise<Block | null> {
   if (ctx.shouldStop?.()) return null;
-  await searchOutward(bot, () => !!nearbyTable(bot), ctx.reflex, ctx.shouldStop);
+  // Only roam looking for an existing table when wide search is allowed; otherwise stick to
+  // what's already in render range (we may still craft + place our own below).
+  if (wideSearch) await searchOutward(bot, () => !!nearbyTable(bot), ctx.reflex, ctx.shouldStop);
   const found = nearbyTable(bot);
   if (found) {
     session.table = found;
@@ -179,7 +235,7 @@ async function findOrMakeTable(
   }
   if (depth >= MAX_DEPTH || ctx.shouldStop?.()) return null;
 
-  const made = await resolveAndCraft(bot, TABLE_NAME, 1, ctx, depth + 1, session);
+  const made = await resolveAndCraft(bot, TABLE_NAME, 1, ctx, depth + 1, session, wideSearch);
   notes.push(made.message);
   if (!made.ok) return null;
 
@@ -248,6 +304,7 @@ async function resolveAndCraft(
   ctx: SkillContext,
   depth: number,
   session: TableSession,
+  wideSearch: boolean,
 ): Promise<SkillResult> {
   if (ctx.shouldStop?.()) return { ok: false, message: 'Cancelled.' };
 
@@ -257,17 +314,17 @@ async function resolveAndCraft(
   const candidates = bot.recipesAll(itemData.id, null, true);
   if (!candidates.length) {
     // No recipe exists at all — it's a raw/world resource, not something we craft.
-    return collectBlock.run(bot, { blockType: itemName, count }, ctx);
+    return collectBlock.run(bot, { blockType: itemName, count, wideSearch }, ctx);
   }
 
   const notes: string[] = [];
   const mightNeedTable = candidates.every((r) => r.requiresTable);
-  let table = await getTable(bot, ctx, depth, notes, mightNeedTable, session);
+  let table = await getTable(bot, ctx, depth, notes, mightNeedTable, session, wideSearch);
   let { recipe, usedTable } = pickRecipes(bot, itemData.id, count, table);
 
   if (!recipe && !table) {
     // Turns out we can't satisfy any recipe without one after all — now actually go get one.
-    table = await getTable(bot, ctx, depth, notes, true, session);
+    table = await getTable(bot, ctx, depth, notes, true, session, wideSearch);
     ({ recipe, usedTable } = pickRecipes(bot, itemData.id, count, table));
   }
 
@@ -299,7 +356,7 @@ async function resolveAndCraft(
     if (have >= need) continue;
     const ingredientName = bot.registry.items[d.id]?.name;
     if (!ingredientName) continue;
-    const sub = await resolveAndCraft(bot, ingredientName, need - have, ctx, depth + 1, session);
+    const sub = await resolveAndCraft(bot, ingredientName, need - have, ctx, depth + 1, session, wideSearch);
     notes.push(sub.message);
   }
 

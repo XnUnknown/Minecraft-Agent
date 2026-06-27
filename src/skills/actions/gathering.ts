@@ -14,16 +14,28 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 const key = (p: { x: number; y: number; z: number }): string => `${p.x},${p.y},${p.z}`;
 
-/** Suffixes shared by block "families" — every wood type has its own *_log, every ore its
- *  own *_ore, etc. A request for one variant should still succeed if a different variant
- *  of the same family is what's actually nearby (e.g. "oak_log" when only dark oak exists). */
+/** Suffixes shared by block "families" — every wood type has its own *_log, every wool its
+ *  own *_wool, etc. A request for one variant should still succeed if a different variant of
+ *  the same family is what's actually nearby (e.g. "oak_log" when only dark oak exists).
+ *  NOTE: `_ore` is deliberately NOT here — ores of different materials are NOT interchangeable
+ *  (diamond_ore != gold_ore), so they get their own same-material-only matching below. */
 const FAMILY_SUFFIXES = [
-  '_log', '_wood', '_planks', '_leaves', '_sapling', '_ore', '_stairs', '_slab', '_fence',
+  '_log', '_wood', '_planks', '_leaves', '_sapling', '_stairs', '_slab', '_fence',
   '_fence_gate', '_door', '_trapdoor', '_button', '_pressure_plate', '_wool', '_carpet',
   '_concrete', '_terracotta', '_stained_glass', '_bed',
 ];
 
 export function familyIdsFor(blockType: string, blocksByName: Record<string, { id: number }>): number[] {
+  if (blockType.endsWith('_ore')) {
+    // Ores must only match the SAME material — never substitute gold_ore for a diamond_ore
+    // request. The only legitimate "family" is one material's variants across stone/deepslate/
+    // nether (e.g. diamond_ore + deepslate_diamond_ore), which all drop the same resource.
+    const material = blockType.replace(/^(deepslate|nether)_/, '').replace(/_ore$/, '');
+    const re = new RegExp(`^(deepslate_|nether_)?${material}_ore$`);
+    return Object.entries(blocksByName)
+      .filter(([name]) => re.test(name))
+      .map(([, b]) => b.id);
+  }
   const suffix = FAMILY_SUFFIXES.find((s) => blockType.endsWith(s));
   if (!suffix) return [];
   return Object.entries(blocksByName)
@@ -47,6 +59,12 @@ export const collectBlock: Skill = {
           description: 'Block name to collect, e.g. oak_log, dark_oak_log, stone, coal_ore.',
         },
         count: { type: 'integer', description: 'How many to collect (default 1).' },
+        wideSearch: {
+          type: 'boolean',
+          description:
+            'If true (default), roam beyond the immediate area to find the block. If false, ' +
+            'only collect what is already within render range and fail fast if none is loaded.',
+        },
       },
       required: ['blockType'],
       additionalProperties: false,
@@ -55,6 +73,7 @@ export const collectBlock: Skill = {
   async run(bot, args, ctx) {
     const blockType = String(args.blockType ?? '').toLowerCase();
     const count = clampInt(args.count, 1, 64, 1);
+    const wideSearch = args.wideSearch !== false;
 
     const blocksByName =
       (bot.registry as unknown as { blocksByName?: Record<string, { id: number }> }).blocksByName ?? {};
@@ -67,6 +86,9 @@ export const collectBlock: Skill = {
 
     const isNearby = (): boolean => bot.findBlocks({ matching: allIds, maxDistance: 48, count: 1 }).length > 0;
     if (!isNearby()) {
+      if (!wideSearch) {
+        return { ok: false, message: `No ${blockType} within render range, and wide search is off.` };
+      }
       await searchOutward(bot, isNearby, ctx.reflex, ctx.shouldStop);
     }
 

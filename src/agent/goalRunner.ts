@@ -3,7 +3,7 @@ import { LLMManager } from '../llm/LLMManager';
 import type { LLMProvider, ChatMessage } from '../llm/types';
 import type { Perception } from '../perception/Perception';
 import type { ReflexLayer } from '../reflex/ReflexLayer';
-import { SkillRegistry } from '../skills/registry';
+import { SkillRegistry, type SkillRegistryOptions } from '../skills/registry';
 import {
   buildSystemPrompt,
   buildJsonSystemPrompt,
@@ -40,7 +40,7 @@ interface Task {
  */
 export class GoalRunner {
   private llm = new LLMManager();
-  private skills = new SkillRegistry();
+  private skills: SkillRegistry;
   private memory: ConversationMemory;
 
   /** New player lines not yet shown to the LLM — folded into the live session at its next turn. */
@@ -59,7 +59,9 @@ export class GoalRunner {
     private readonly reflex: ReflexLayer,
     private readonly peerUsernames: string[] = [],
     memoryOpts?: ConversationMemoryOptions,
+    skillsOpts?: SkillRegistryOptions,
   ) {
+    this.skills = new SkillRegistry(skillsOpts);
     this.memory = new ConversationMemory(memoryOpts);
     logger.info(`Active ${this.llm.describe('planner')}`);
   }
@@ -186,7 +188,9 @@ export class GoalRunner {
     const mode = this.llm.toolMode('planner');
     const temperature = this.llm.temperature('planner');
     const maxTokens = this.llm.maxTokens('planner') ?? 2048;
-    const baseSystem = mode === 'json' ? buildJsonSystemPrompt(bot.username, tools) : buildSystemPrompt(bot.username);
+    const codeOn = this.skills.codeExecution;
+    const baseSystem =
+      mode === 'json' ? buildJsonSystemPrompt(bot.username, tools, codeOn) : buildSystemPrompt(bot.username, codeOn);
 
     const ctx = {
       requestedBy: '',

@@ -42,9 +42,15 @@ const SKILLS: Skill[] = [
   tradeWithVillager,
   searchWide,
   messageAgent,
-  runCode,
-  saveSkill,
 ];
+
+/** Sandbox code-execution skills — only registered when config `skills.codeExecution` is on. */
+const CODE_SKILLS: Skill[] = [runCode, saveSkill];
+
+export interface SkillRegistryOptions {
+  /** Enable the runCode/saveSkill sandbox tools and load saved dynamic skills. Default false. */
+  codeExecution?: boolean;
+}
 
 export class SkillRegistry {
   private map = new Map<string, Skill>();
@@ -52,8 +58,20 @@ export class SkillRegistry {
    *  tracked separately so goalRunner can tell "ran generated code" apart from a built-in. */
   private dynamicNames = new Set<string>();
 
-  constructor() {
+  /** True when sandbox code execution is enabled — used to advertise runCode in the prompt. */
+  readonly codeExecution: boolean;
+
+  constructor(opts: SkillRegistryOptions = {}) {
+    this.codeExecution = opts.codeExecution === true;
+
     for (const s of SKILLS) this.map.set(s.def.name, s);
+
+    if (!this.codeExecution) {
+      logger.info('Sandbox code execution disabled — runCode/saveSkill and saved skills are off.');
+      return; // no runCode/saveSkill, and saved dynamic skills (which run in the sandbox) stay off
+    }
+
+    for (const s of CODE_SKILLS) this.map.set(s.def.name, s);
     for (const stored of loadStoredSkills()) {
       if (this.map.has(stored.name)) {
         logger.warn(`Saved skill "${stored.name}" collides with a built-in tool name — skipped.`);

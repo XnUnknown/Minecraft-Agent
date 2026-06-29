@@ -34,6 +34,12 @@ export interface AppConfig {
     maxMessages: number;
     keepRecent: number;
   };
+  skills: {
+    /** Enables the `runCode` sandbox tool (and `saveSkill` + loading saved dynamic skills).
+     *  Off by default: the planner sticks to the built-in tools instead of writing/running
+     *  arbitrary JS in the vm sandbox. */
+    codeExecution: boolean;
+  };
   viewer: {
     port: number;
   };
@@ -73,6 +79,10 @@ export function loadConfig(path = 'config/default.yaml'): AppConfig {
     conversation: {
       maxMessages: Number(raw.conversation?.maxMessages ?? 16),
       keepRecent: Number(raw.conversation?.keepRecent ?? 6),
+    },
+    skills: {
+      // Default OFF — opt in by setting `skills.codeExecution: true` in config.
+      codeExecution: raw.skills?.codeExecution === true,
     },
     viewer: {
       port: viewerPort,

@@ -39,10 +39,16 @@ export function registerChatCommands(
   perception: Perception,
   reflex: ReflexLayer,
 ): void {
-  const runner = new GoalRunner(perception, reflex, peerUsernames, {
-    maxMessages: config.conversation.maxMessages,
-    keepRecent: config.conversation.keepRecent,
-  });
+  const runner = new GoalRunner(
+    perception,
+    reflex,
+    peerUsernames,
+    {
+      maxMessages: config.conversation.maxMessages,
+      keepRecent: config.conversation.keepRecent,
+    },
+    { codeExecution: config.skills.codeExecution },
+  );
   const knownNames = [profile.username, ...peerUsernames];
 
   bot.once('spawn', () => {

@@ -24,5 +24,11 @@ conversation:
   maxMessages: 32       # compact the chat history once it exceeds this many messages
   keepRecent: 20         # messages kept verbatim after compaction (older ones -> summary)
 
+skills:
+  # Sandbox code execution. When false (default), the `runCode`/`saveSkill` tools are NOT
+  # offered to the planner and saved dynamic skills aren't loaded — the bot uses only its
+  # built-in tools. Set true to let the model write & run JavaScript against the bot.
+  codeExecution: false
+
 viewer:
   port: 3000             # 3D POV viewer (prismarine-viewer) — toggle in-game with "pov"/"pov off"

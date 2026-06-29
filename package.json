@@ -8,7 +8,8 @@
     "dev": "nodemon",
     "start:multi": "tsx scripts/launch-agents.ts",
     "typecheck": "tsc --noEmit",
-    "postinstall": "patch-package"
+    "postinstall": "patch-package",
+    "gen:api-schema": "node scripts/gen-api-schema.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.2",

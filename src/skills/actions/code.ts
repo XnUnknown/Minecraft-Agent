@@ -19,15 +19,15 @@ export const runCode: Skill = {
   def: {
     name: 'runCode',
     description:
-      'Run a short JavaScript snippet for logic existing tools cannot express directly ' +
-      '(conditionals, loops, combining several tools, simple math). Available inside the ' +
-      'code: bot (the live Mineflayer bot), skills.<toolName>(args) to call ANY tool by name ' +
-      'exactly like a normal plan step (e.g. await skills.collectBlock({blockType:"oak_log", ' +
-      'count:5})), sleep(ms), log(...)/console.log(...) to report what happened, and ' +
-      'Vec3(x,y,z) for positions. Prefer calling an existing tool directly when one already ' +
-      'does the job — reach for this only to combine or condition them. If the approach ' +
-      'worked and is the kind of thing you will be asked to do again, follow it with ' +
-      'saveSkill so it becomes a real reusable tool instead of rewriting the code each time.',
+      'Run JavaScript against the live bot — this is the MAIN way to act (move, mine, dig, ' +
+      'place, craft, smelt, fight, trade, follow, drop/equip items, build...). There are no ' +
+      'dedicated action tools; do it here using the Mineflayer API (see the API schema in your ' +
+      'system prompt). Available inside the code: bot (the live Mineflayer bot), goals ' +
+      '(pathfinder: await bot.pathfinder.goto(new goals.GoalNear(x,y,z,1))), Movements, mcData ' +
+      '(mcData.blocksByName/itemsByName), Vec3(x,y,z), skills.<toolName>(args) to call your own ' +
+      'tools, sleep(ms), and log(...)/console.log(...) to report what happened. Always await ' +
+      'Promises. If the approach worked and is the kind of thing you will be asked to do again, ' +
+      'follow it with saveSkill so it becomes a reusable tool instead of rewriting the code.',
     parameters: {
       type: 'object',
       properties: {
@@ -35,8 +35,9 @@ export const runCode: Skill = {
           type: 'string',
           description:
             'JavaScript to run; may use await. Example: ' +
-            'if ((await skills.getRecipe({item:"torch"})).message.includes("Craftable")) ' +
-            '{ await skills.craftItem({item:"torch", count:5}); }',
+            'const id = mcData.blocksByName.oak_log.id; const b = bot.findBlock({matching:id, ' +
+            'maxDistance:48}); if (b) { await bot.pathfinder.goto(new goals.GoalNear(b.position.x, ' +
+            'b.position.y, b.position.z, 1)); await bot.collectBlock.collect(b); log("got a log"); }',
         },
         purpose: { type: 'string', description: 'Optional one-line note on what this code is trying to do.' },
       },
@@ -62,9 +63,10 @@ export const saveSkill: Skill = {
       'Save working JavaScript (written the same way as for runCode) as a new, permanently ' +
       'reusable tool under a name, so future tasks can call it directly instead of ' +
       'rewriting the code. Use this right after a runCode approach worked, when it is the ' +
-      'kind of thing likely to be asked for again — e.g. a "trade with the villager" skill ' +
-      'that checks the trades on offer, gathers/searches for whatever is missing using ' +
-      'existing tools, brings it back, then calls tradeWithVillager.',
+      'kind of thing likely to be asked for again — e.g. a "craftPickaxe" skill that gathers ' +
+      'logs, makes planks/sticks, places a crafting table, and crafts the pickaxe; or a ' +
+      '"fulfillVillagerTrade" skill that reads the villager trades, gathers what is missing, ' +
+      'and completes the trade. The code can read its own parameters from the args object.',
     parameters: {
       type: 'object',
       properties: {

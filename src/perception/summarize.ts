@@ -60,7 +60,7 @@ export function summarizeWorldState(
 
   if (blocks?.interesting.length) {
     lines.push(
-      `Notable blocks within 16m (use these EXACT names for collectBlock): ` +
+      `Notable blocks within 16m (use these EXACT names in code, e.g. mcData.blocksByName[name]): ` +
         blocks.interesting.map((b) => `${b.name} x${b.count} (${round(b.distance)}m ${b.direction})`).join(', '),
     );
   }

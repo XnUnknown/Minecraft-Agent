@@ -1,40 +1,23 @@
 import type { Bot } from 'mineflayer';
 import type { Skill, SkillContext, SkillResult } from './types';
 import type { ToolDef } from '../llm/types';
-import { goToPlayer, goToCoordinates, followPlayer, stopMoving } from './actions/navigation';
 import { reportStatus } from './actions/status';
 import { sayInChat } from './actions/chat';
-import { collectBlock } from './actions/gathering';
-import { attackNearestMob } from './actions/combat';
-import { tossItem } from './actions/inventory';
-import { craftItem, getRecipe } from './actions/crafting';
-import { wearItem } from './actions/equipment';
-import { tradeWithVillager } from './actions/trading';
-import { searchWide } from './actions/search';
-import { messageAgent } from './actions/messaging';
 import { runCode, saveSkill, loadStoredSkills, buildDynamicSkill } from './actions/code';
 import { logger } from '../util/logger';
 
 /**
- * All registered skills. To add a new capability: write a `Skill` (def + run) in its own
- * file under `actions/`, import it here, and add it to this list.
+ * The deliberately tiny set of built-in tools. Everything else the bot can do is expressed by
+ * the model writing JavaScript against the full mineflayer API inside `runCode` (see the API
+ * schema injected into the system prompt), and optionally persisted with `saveSkill`. We keep
+ * only what's either cheaper/safer as a native primitive (instant status with no LLM, plain
+ * chat) or what bootstraps the sandbox itself (runCode, saveSkill). To add a NEW built-in, write
+ * a `Skill` under `actions/` and add it here — but prefer a saved skill unless it truly needs to
+ * live outside the sandbox.
  */
 const SKILLS: Skill[] = [
-  goToPlayer,
-  goToCoordinates,
-  followPlayer,
-  stopMoving,
   reportStatus,
   sayInChat,
-  collectBlock,
-  attackNearestMob,
-  tossItem,
-  craftItem,
-  getRecipe,
-  wearItem,
-  tradeWithVillager,
-  searchWide,
-  messageAgent,
   runCode,
   saveSkill,
 ];

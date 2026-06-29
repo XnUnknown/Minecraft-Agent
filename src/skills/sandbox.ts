@@ -1,9 +1,13 @@
 import { compileFunction, createContext } from 'node:vm';
 import { Vec3 } from 'vec3';
+// mineflayer-pathfinder is CommonJS; default-import then destructure (see bot/plugins.ts).
+import pathfinderPkg from 'mineflayer-pathfinder';
 import type { Bot } from 'mineflayer';
 import type { SkillContext } from './types';
 import type { SkillRegistry } from './registry';
 import { withTimeout } from './util';
+
+const { goals, Movements } = pathfinderPkg;
 
 export interface SandboxResult {
   ok: boolean;
@@ -13,7 +17,9 @@ export interface SandboxResult {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-const SANDBOX_PARAMS = ['bot', 'args', 'skills', 'sleep', 'log', 'Vec3'] as const;
+// Everything the generated code can name. Keep in sync with the "sandbox globals" line in the
+// system prompt (promptBuilder.ts) and the API schema's assumptions.
+const SANDBOX_PARAMS = ['bot', 'args', 'skills', 'sleep', 'log', 'Vec3', 'goals', 'Movements', 'mcData'] as const;
 
 /**
  * Runs LLM-written JavaScript (Voyager-style: write code against a curated control API,
@@ -44,6 +50,10 @@ export async function runInSandbox(
     skillsBridge[def.name] = (a: Record<string, unknown> = {}) => registry.execute(bot, def.name, a, ctx);
   }
 
+  // bot.registry IS the loaded minecraft-data instance (blocksByName, itemsByName, recipes,
+  // foods, ...), so expose it as `mcData` without a separate import/version lookup.
+  const mcData = (bot as unknown as { registry: unknown }).registry;
+
   const sandboxGlobals = {
     bot,
     args,
@@ -51,6 +61,9 @@ export async function runInSandbox(
     sleep,
     log,
     Vec3,
+    goals,
+    Movements,
+    mcData,
     // LLMs default to console.log out of habit — alias it to the same captured log instead
     // of leaving it undefined (a fresh vm context has no console of its own).
     console: { log, warn: log, error: log },
@@ -63,7 +76,7 @@ export async function runInSandbox(
     const wrapped = `return (async () => {\n${code}\n})();`;
     const fn = compileFunction(wrapped, [...SANDBOX_PARAMS], { parsingContext: context });
     const returned = await withTimeout(
-      Promise.resolve(fn(bot, args, skillsBridge, sleep, log, Vec3)),
+      Promise.resolve(fn(bot, args, skillsBridge, sleep, log, Vec3, goals, Movements, mcData)),
       timeoutMs,
     );
     const tail = returned !== undefined ? ` Returned: ${stringify(returned)}.` : '';

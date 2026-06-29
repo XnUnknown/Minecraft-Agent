@@ -16,6 +16,7 @@ import {
 import { ConversationMemory, type ConversationMemoryOptions } from './ConversationMemory';
 import { contextBlock as craftingContextBlock } from '../knowledge/CraftingExperience';
 import { contextBlock as agentExperienceContextBlock, recordExperience } from '../knowledge/AgentExperience';
+import { apiReferenceBlock } from '../knowledge/ApiReference';
 import { sendChat } from '../util/chat';
 import { logger } from '../util/logger';
 
@@ -201,6 +202,7 @@ export class GoalRunner {
       craftingContextBlock(),
       agentExperienceContextBlock(),
       this.peerUsernames,
+      apiReferenceBlock(),
     );
     let assistantRecord = '';
     let budget = 0;
@@ -231,6 +233,7 @@ export class GoalRunner {
           craftingContextBlock(),
           agentExperienceContextBlock(),
           this.peerUsernames,
+          apiReferenceBlock(),
         );
         messages = [...this.memory.recent()];
         for (const t of incoming) {
@@ -463,13 +466,15 @@ function withContext(
   craftingNotes: string,
   agentExperience: string,
   peerUsernames: string[],
+  apiReference: string,
 ): string {
   const parts = [system];
+  if (apiReference) parts.push(apiReference);
   if (peerUsernames.length) {
     parts.push(
-      `Other agents online alongside you: ${peerUsernames.join(', ')}. Use messageAgent to ask ` +
-        `one of them for help (e.g. a material you don't have) — they'll do it and deliver, or ` +
-        `reply that they're busy.`,
+      `Other agents online alongside you: ${peerUsernames.join(', ')}. To ask one for help (e.g. ` +
+        `a material you don't have), send a normal chat message naming them (sayInChat, or ` +
+        `bot.chat in runCode) — they'll do it and deliver, or reply that they're busy.`,
     );
   }
   if (craftingNotes) parts.push(`Known crafting recipes (learned from past successes):\n${craftingNotes}`);

@@ -8,6 +8,9 @@ Minecraft Agent Server/
 Minecraft Agent Servers/
 *.jar
 
+# Runtime debug dump of the latest LLM context (regenerated every turn)
+data/context-dump.md
+
 # Local Claude Code settings
 .claude/settings.local.json
 

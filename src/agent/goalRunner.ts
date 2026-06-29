@@ -18,6 +18,7 @@ import { contextBlock as craftingContextBlock } from '../knowledge/CraftingExper
 import { contextBlock as agentExperienceContextBlock, recordExperience } from '../knowledge/AgentExperience';
 import { sendChat } from '../util/chat';
 import { logger } from '../util/logger';
+import { dumpContext } from '../util/contextDump';
 
 /** Batches (LLM call + execution) allotted to ONE player line before the session idles. A line
  *  gets a fresh budget each time it (or a new line) is folded in, so multi-step jobs have room
@@ -268,6 +269,8 @@ export class GoalRunner {
       budget--;
 
       logger.info(`[loop] planner request (${transcript.length} result(s) so far)`);
+      // Debug aid: write the exact context the planner is about to see to data/context-dump.md.
+      dumpContext({ system, messages, tools, label: `planner (${mode})` });
       const res = await provider.chat({
         system,
         messages,

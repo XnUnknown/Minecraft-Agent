@@ -10,6 +10,33 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 /** Common furnace fuels, best first — used when the caller doesn't name a fuel. */
 const FUELS = ['coal', 'charcoal', 'coal_block', 'oak_planks', 'birch_planks', 'spruce_planks', 'stick', 'lava_bucket'];
 
+/** How close the bot must be to actually open/use a block or entity (Minecraft reach). */
+const INTERACT_REACH = 4.5;
+
+function dist(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): number {
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+/**
+ * Walk toward something for the purpose of interacting with it: aim for `range` (minimum 2 —
+ * pathfinder usually can't stand exactly 1 block from a wall-backed station), but treat being
+ * within arm's reach as success even if it couldn't hit the exact range, since that's all that's
+ * needed to open/use it. Avoids the "path blocked" failures from over-tight ranges.
+ */
+async function approach(
+  bot: Bot,
+  getPos: () => { x: number; y: number; z: number } | null,
+  ctx: SkillContext,
+  range = 2,
+): Promise<boolean> {
+  const r = Math.max(2, range);
+  const arrived = await walkToward(bot, getPos, r, ctx.reflex, ctx.shouldStop);
+  if (arrived) return true;
+  const pos = getPos();
+  const me = bot.entity?.position;
+  return !!(pos && me && dist(me, pos) <= INTERACT_REACH);
+}
+
 /** Matches a loaded entity by mob name, player username, or display name (case-insensitive). */
 function entityMatches(e: Entity, target: string): boolean {
   const t = target.toLowerCase();
@@ -53,7 +80,7 @@ export const goToEntity: Skill = {
     if (!entity) return { ok: false, message: `No ${target} in sight.` };
 
     const id = entity.id;
-    const arrived = await walkToward(bot, () => bot.entities[id]?.position ?? null, range, ctx.reflex, ctx.shouldStop);
+    const arrived = await approach(bot, () => bot.entities[id]?.position ?? null, ctx, range);
     return arrived
       ? { ok: true, message: `Reached the ${entity.name ?? target}.` }
       : { ok: false, message: `Couldn't get to the ${target} (it moved or the path was blocked).` };
@@ -88,7 +115,7 @@ export const goToBlock: Skill = {
     }
     const pos = find();
     if (!pos) return { ok: false, message: `No ${name} within range.` };
-    const arrived = await walkToward(bot, () => pos, range, ctx.reflex, ctx.shouldStop);
+    const arrived = await approach(bot, () => pos, ctx, range);
     return arrived
       ? { ok: true, message: `Standing by the ${name}.` }
       : { ok: false, message: `Couldn't reach the ${name} (path blocked).` };
@@ -125,7 +152,7 @@ export const interactEntity: Skill = {
     if (!entity) return { ok: false, message: `No ${target} in sight.` };
 
     const id = entity.id;
-    const arrived = await walkToward(bot, () => bot.entities[id]?.position ?? null, 2, ctx.reflex, ctx.shouldStop);
+    const arrived = await approach(bot, () => bot.entities[id]?.position ?? null, ctx, 2);
     if (!arrived) return { ok: false, message: `Couldn't get close enough to the ${target}.` };
     const live = bot.entities[id];
     if (!live) return { ok: false, message: `Lost track of the ${target}.` };
@@ -187,21 +214,35 @@ export const useFurnace: Skill = {
       await furnace.putFuel(fuelItem.id, null, fuelToLoad);
       await furnace.putInput(inputItem.id, null, count);
 
-      const deadline = Date.now() + count * 11000 + 8000;
-      while (Date.now() < deadline && !ctx.shouldStop?.()) {
-        await sleep(1000);
+      // Smelting is ~10s/item, so genuinely wait — but never hang: bail if nothing has made
+      // progress for a while (wrong/insufficient fuel, un-smeltable input), and cap total time.
+      const hardCap = Math.min(count, 8) * 11000 + 12000;
+      const deadline = Date.now() + hardCap;
+      let bestOutput = 0;
+      let lastProgressAt = Date.now();
+      while (Date.now() < deadline) {
+        if (ctx.shouldStop?.()) break;
+        await sleep(1500);
         const out = furnace.outputItem();
-        if (out && out.count >= count) break;
-        if (!furnace.inputItem() && furnace.outputItem()) break; // input consumed, nothing more coming
+        const cur = out ? out.count : 0;
+        if (cur > bestOutput) {
+          bestOutput = cur;
+          lastProgressAt = Date.now();
+        }
+        if (cur >= count) break; // got everything we asked for
+        if (!furnace.inputItem()) break; // all input consumed; output is final
+        // Nothing finished AND nothing is cooking for 18s -> it's not going to. Stop waiting.
+        if (Date.now() - lastProgressAt > 18000 && (furnace.progress ?? 0) <= 0) break;
       }
+
       let taken = 0;
       if (furnace.outputItem()) {
         const t = await furnace.takeOutput();
         taken = t?.count ?? 0;
       }
-      return taken > 0
-        ? { ok: true, message: `Smelted ${taken}x from ${count}x ${inputName}.` }
-        : { ok: false, message: `Nothing smelted (wrong fuel, un-smeltable input, or it didn't finish in time).` };
+      if (taken >= count) return { ok: true, message: `Smelted ${taken}x from ${count}x ${inputName}.` };
+      if (taken > 0) return { ok: true, message: `Smelted ${taken}x ${inputName} so far (took the finished ones; the rest hadn't cooked yet).` };
+      return { ok: false, message: `Nothing smelted — likely wrong/insufficient fuel or an un-smeltable input (${inputName}).` };
     } finally {
       try {
         furnace.close();
@@ -279,16 +320,22 @@ function hasItem(bot: Bot, name?: string): boolean {
   return id !== undefined && bot.inventory.count(id, null) > 0;
 }
 
-/** Finds a station block of one of `names` within range and walks to it; if none is loaded but
- *  the bot carries one, places it. Returns the block to open, or null. */
+/** Finds a station block of one of `names` within range and walks to within interaction reach.
+ *  If none is loaded, it places one the bot carries — or, if it can make one right now (e.g.
+ *  a furnace from cobblestone), crafts it via the craftItem tool, then places it. Returns the
+ *  block to open, or null. */
 async function reachStation(bot: Bot, names: string[], ctx: SkillContext): Promise<import('prismarine-block').Block | null> {
   const ids = names.map((n) => bot.registry.blocksByName[n]?.id).filter((id): id is number => id !== undefined);
   const find = (): import('prismarine-block').Block | null => (ids.length ? bot.findBlock({ matching: ids, maxDistance: 48 }) : null);
 
   let block = find();
   if (!block) {
-    // Try placing one we carry (e.g. a furnace in inventory), else give the area a quick scan.
+    // No station nearby: place one we carry, or try to craft one (one-level, via craftItem) and
+    // place that — same "make it yourself" convenience as crafting tables.
     for (const n of names) {
+      if (!hasItem(bot, n) && ctx.registry) {
+        await ctx.registry.execute(bot, 'craftItem', { item: n }, ctx);
+      }
       if (hasItem(bot, n)) {
         await placeNear(bot, n);
         break;
@@ -301,6 +348,6 @@ async function reachStation(bot: Bot, names: string[], ctx: SkillContext): Promi
     block = find();
   }
   if (!block) return null;
-  await walkToward(bot, () => block!.position, 3, ctx.reflex, ctx.shouldStop);
+  await approach(bot, () => block!.position, ctx, 2);
   return bot.blockAt(block.position) ?? block;
 }

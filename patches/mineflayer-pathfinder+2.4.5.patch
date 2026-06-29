@@ -1,0 +1,20 @@
+diff --git a/node_modules/mineflayer-pathfinder/index.js b/node_modules/mineflayer-pathfinder/index.js
+index b38bd30..e468518 100644
+--- a/node_modules/mineflayer-pathfinder/index.js
++++ b/node_modules/mineflayer-pathfinder/index.js
+@@ -541,7 +541,14 @@ function inject (bot) {
+       let canPlace = true
+       if (placingBlock.jump) {
+         bot.setControlState('jump', true)
+-        canPlace = placingBlock.y + 1 < bot.entity.position.y
++        // Place the scaffold block at the APEX of the jump (vertical velocity has stopped),
++        // not the instant we rise above the target. Placing while still moving up is rejected
++        // by stricter servers (e.g. Paper/Spigot anti-cheat, whose server-side player position
++        // lags the client) -> place_error -> resetPath -> the bot jumps over and over without
++        // ever pillaring up. Waiting for the peak is the stable moment both vanilla and Paper
++        // accept. velocity.y <= 0 is true for the tick at the top and the first ticks of the
++        // fall, while we're still highest above the target, giving a reliable placement window.
++        canPlace = placingBlock.y + 1 < bot.entity.position.y && bot.entity.velocity.y <= 0
+       }
+       if (canPlace) {
+         if (!lockEquipItem.tryAcquire()) return

@@ -7,6 +7,7 @@ import { sayInChat } from './actions/chat';
 import { collectBlock } from './actions/gathering';
 import { attackNearestMob } from './actions/combat';
 import { tossItem } from './actions/inventory';
+import { placeBlock } from './actions/building';
 import { craftItem, getRecipe } from './actions/crafting';
 import { wearItem } from './actions/equipment';
 import { tradeWithVillager } from './actions/trading';
@@ -34,6 +35,7 @@ const SKILLS: Skill[] = [
   interactEntity,
   dismount,
   tossItem,
+  placeBlock,
   craftItem,
   getRecipe,
   useFurnace,

@@ -12,7 +12,7 @@ import { wearItem } from './actions/equipment';
 import { tradeWithVillager } from './actions/trading';
 import { searchWide } from './actions/search';
 import { messageAgent } from './actions/messaging';
-import { goToEntity, goToBlock, interactEntity, useFurnace, useEnchantmentTable } from './actions/interaction';
+import { goToEntity, goToBlock, interactEntity, dismount, useFurnace, useEnchantmentTable } from './actions/interaction';
 import { runCode, saveSkill, loadStoredSkills, buildDynamicSkill } from './actions/code';
 import { logger } from '../util/logger';
 
@@ -32,6 +32,7 @@ const SKILLS: Skill[] = [
   collectBlock,
   attackNearestMob,
   interactEntity,
+  dismount,
   tossItem,
   craftItem,
   getRecipe,

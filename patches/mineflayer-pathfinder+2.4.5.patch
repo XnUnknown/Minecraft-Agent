@@ -1,20 +1,77 @@
 diff --git a/node_modules/mineflayer-pathfinder/index.js b/node_modules/mineflayer-pathfinder/index.js
-index b38bd30..e468518 100644
+index b38bd30..f9353df 100644
 --- a/node_modules/mineflayer-pathfinder/index.js
 +++ b/node_modules/mineflayer-pathfinder/index.js
-@@ -541,7 +541,14 @@ function inject (bot) {
+@@ -26,6 +26,8 @@ function inject (bot) {
+   let digging = false
+   let placing = false
+   let placingBlock = null
++  let placeJumpStart = null
++  let placeAttempts = 0
+   let lastNodeTime = performance.now()
+   let returningPos = null
+   let stopPathing = false
+@@ -129,6 +131,8 @@ function inject (bot) {
+       bot.stopDigging()
+     }
+     placing = false
++    placeJumpStart = null
++    placeAttempts = 0
+     pathUpdated = false
+     astarContext = null
+     lockEquipItem.release()
+@@ -515,6 +519,8 @@ function inject (bot) {
+       if (!placing) {
+         placing = true
+         placingBlock = nextPoint.toPlace.shift()
++        placeJumpStart = null
++        placeAttempts = 0
+         fullStop()
+       }
+ 
+@@ -541,7 +547,18 @@ function inject (bot) {
        let canPlace = true
        if (placingBlock.jump) {
          bot.setControlState('jump', true)
 -        canPlace = placingBlock.y + 1 < bot.entity.position.y
-+        // Place the scaffold block at the APEX of the jump (vertical velocity has stopped),
-+        // not the instant we rise above the target. Placing while still moving up is rejected
-+        // by stricter servers (e.g. Paper/Spigot anti-cheat, whose server-side player position
-+        // lags the client) -> place_error -> resetPath -> the bot jumps over and over without
-+        // ever pillaring up. Waiting for the peak is the stable moment both vanilla and Paper
-+        // accept. velocity.y <= 0 is true for the tick at the top and the first ticks of the
-+        // fall, while we're still highest above the target, giving a reliable placement window.
-+        canPlace = placingBlock.y + 1 < bot.entity.position.y && bot.entity.velocity.y <= 0
++        if (placeJumpStart === null) placeJumpStart = performance.now()
++        const sinceJump = performance.now() - placeJumpStart
++        // Pillaring up was failing on BOTH Paper and vanilla: a single placement attempt often
++        // misses the brief window where the bot is above the target and the server agrees on its
++        // position. Make TWO timed attempts after the jump — at ~0.4s and ~0.5s — and (below)
++        // retry the second instead of abandoning the path after the first failure. We still
++        // require the bot to actually be above the block so it never tries to place where it's
++        // standing.
++        const aboveTarget = placingBlock.y + 1 < bot.entity.position.y
++        canPlace =
++          aboveTarget &&
++          ((placeAttempts === 0 && sinceJump >= 400) || (placeAttempts === 1 && sinceJump >= 500))
        }
        if (canPlace) {
          if (!lockEquipItem.tryAcquire()) return
+@@ -550,6 +567,7 @@ function inject (bot) {
+             lockEquipItem.release()
+             const refBlock = bot.blockAt(new Vec3(placingBlock.x, placingBlock.y, placingBlock.z), false)
+             if (!lockPlaceBlock.tryAcquire()) return
++            placeAttempts++ // count an actual placement attempt (locks held, so no double-counting)
+             if (interactableBlocks.includes(refBlock.name)) {
+               bot.setControlState('sneak', true)
+             }
+@@ -558,13 +576,15 @@ function inject (bot) {
+                 // Dont release Sneak if the block placement was not successful
+                 bot.setControlState('sneak', false)
+                 if (bot.pathfinder.LOSWhenPlacingBlocks && placingBlock.returnPos) returningPos = placingBlock.returnPos.clone()
++                placing = false // placed -> move on to the next node
+               })
+               .catch(_ignoreError => {
+-                resetPath('place_error')
++                // Don't abandon the whole path on the first miss — let the second timed attempt
++                // (the ~0.5s one) run. Only give up once both attempts have failed.
++                if (placeAttempts >= 2) resetPath('place_error')
+               })
+               .then(() => {
+                 lockPlaceBlock.release()
+-                placing = false
+                 lastNodeTime = performance.now()
+               })
+           })

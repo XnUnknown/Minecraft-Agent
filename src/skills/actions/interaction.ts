@@ -170,6 +170,28 @@ export const interactEntity: Skill = {
   },
 };
 
+export const dismount: Skill = {
+  def: {
+    name: 'dismount',
+    description: 'Get off / out of whatever you are currently riding — a boat, horse, minecart, pig, etc.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  async run(bot) {
+    const vehicle = (bot as unknown as { vehicle?: unknown }).vehicle;
+    if (!vehicle) return { ok: true, message: "I'm not riding anything." };
+    try {
+      bot.dismount();
+      await sleep(400);
+      const still = (bot as unknown as { vehicle?: unknown }).vehicle;
+      return still
+        ? { ok: false, message: "Tried to get off but I'm still on it — it may need a clear spot beside it." }
+        : { ok: true, message: 'Got off.' };
+    } catch (err) {
+      return { ok: false, message: `Couldn't dismount: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  },
+};
+
 export const useFurnace: Skill = {
   def: {
     name: 'useFurnace',

@@ -1,6 +1,6 @@
 {
-  "watch": ["src", "config"],
-  "ext": "ts,yaml",
+  "watch": ["src", "config", "context"],
+  "ext": "ts,yaml,md",
   "ignore": ["data/**", "patches/**"],
   "exec": "tsx src/index.ts",
   "delay": 500

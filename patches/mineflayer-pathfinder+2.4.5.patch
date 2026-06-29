@@ -1,5 +1,5 @@
 diff --git a/node_modules/mineflayer-pathfinder/index.js b/node_modules/mineflayer-pathfinder/index.js
-index b38bd30..1885bbd 100644
+index b38bd30..4db994d 100644
 --- a/node_modules/mineflayer-pathfinder/index.js
 +++ b/node_modules/mineflayer-pathfinder/index.js
 @@ -26,6 +26,9 @@ function inject (bot) {
@@ -32,32 +32,34 @@ index b38bd30..1885bbd 100644
          fullStop()
        }
  
-@@ -541,7 +550,23 @@ function inject (bot) {
+@@ -540,8 +549,25 @@ function inject (bot) {
+       }
        let canPlace = true
        if (placingBlock.jump) {
++        // Pillaring up (jump, then place the block below the feet) is timing-sensitive and was
++        // brittle with one fixed moment; spraying placeBlock across the whole arc was WORSE, since
++        // most tries land while the bot is poorly positioned, burn an attempt cap, and thrash
++        // resetPath. The trigger that holds on both vanilla and Paper is to place at the APEX of
++        // the jump: hold jump, and once the bot is high enough to have a clear 1-block gap below
++        // its feet AND its upward velocity has bled off (at / just past the top of the arc), place
++        // once. Throttle so we fire at most once per apex window, and give up only on a wall-clock
++        // timeout — never on an attempt count. Plain (non-jump) placements are untouched: they try
++        // once and reset on a single failure (see the catch below).
          bot.setControlState('jump', true)
 -        canPlace = placingBlock.y + 1 < bot.entity.position.y
 +        if (placeJumpStart === null) placeJumpStart = performance.now()
-+        const sinceJump = performance.now() - placeJumpStart
-+        // Pillaring up (jump, then place the block below) is timing-sensitive, and ONE fixed
-+        // moment was brittle on both Paper and vanilla. Instead retry MANY times spread across a
-+        // ~1s+ window: whenever the bot is above the target, throttled to ~110ms apart so the
-+        // tries land at varied points (early and late) of the jump arcs, until one is accepted.
-+        // Give up only after several misses or ~3.5s and let the path recompute. Plain
-+        // (non-jump) placements are untouched — they still try once and reset on a single failure
-+        // (see the catch below).
-+        const PLACE_RETRY_MS = 110
-+        const PLACE_MAX_ATTEMPTS = 12
-+        if (sinceJump > 3500 || placeAttempts >= PLACE_MAX_ATTEMPTS) {
++        if (performance.now() - placeJumpStart > 4000) {
 +          resetPath('place_timeout')
 +          return
 +        }
-+        const aboveTarget = placingBlock.y + 1 < bot.entity.position.y
-+        canPlace = aboveTarget && performance.now() - placeLastAttempt >= PLACE_RETRY_MS
++        const highEnough = bot.entity.position.y - placingBlock.y > 1.0
++        const nearApex = bot.entity.velocity.y <= 0.10
++        const throttled = performance.now() - placeLastAttempt < 150
++        canPlace = highEnough && nearApex && !throttled
        }
        if (canPlace) {
          if (!lockEquipItem.tryAcquire()) return
-@@ -550,6 +575,8 @@ function inject (bot) {
+@@ -550,6 +576,8 @@ function inject (bot) {
              lockEquipItem.release()
              const refBlock = bot.blockAt(new Vec3(placingBlock.x, placingBlock.y, placingBlock.z), false)
              if (!lockPlaceBlock.tryAcquire()) return
@@ -66,7 +68,7 @@ index b38bd30..1885bbd 100644
              if (interactableBlocks.includes(refBlock.name)) {
                bot.setControlState('sneak', true)
              }
-@@ -558,13 +585,15 @@ function inject (bot) {
+@@ -558,13 +586,15 @@ function inject (bot) {
                  // Dont release Sneak if the block placement was not successful
                  bot.setControlState('sneak', false)
                  if (bot.pathfinder.LOSWhenPlacingBlocks && placingBlock.returnPos) returningPos = placingBlock.returnPos.clone()

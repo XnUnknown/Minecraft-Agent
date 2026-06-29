@@ -1,6 +1,6 @@
 import type { Bot } from 'mineflayer';
 import { LLMManager } from '../llm/LLMManager';
-import type { LLMProvider } from '../llm/types';
+import type { LLMProvider, ChatMessage } from '../llm/types';
 import type { Perception } from '../perception/Perception';
 import type { ReflexLayer } from '../reflex/ReflexLayer';
 import { SkillRegistry } from '../skills/registry';
@@ -19,8 +19,9 @@ import { contextBlock as agentExperienceContextBlock, recordExperience } from '.
 import { sendChat } from '../util/chat';
 import { logger } from '../util/logger';
 
-/** Turns between an LLM call and execution; capped to bound cost. Every task now takes at
- *  least 2 (act, then confirm-done), so this needs more headroom than a failure-only retry cap. */
+/** Batches (LLM call + execution) allotted to ONE player line before the session idles. A line
+ *  gets a fresh budget each time it (or a new line) is folded in, so multi-step jobs have room
+ *  while a stuck one still gives up instead of looping forever. */
 const MAX_BATCHES = 6;
 
 interface Task {
@@ -29,21 +30,27 @@ interface Task {
 }
 
 /**
- * Agentic loop: chat messages become tasks on a queue that a background worker drains one
- * at a time, planning each via the LLM and executing the steps. The handler never blocks —
- * while a task runs you can still ask for status, cancel, or queue more work. A request
- * marked "now" pre-empts the current task; everything else runs in order. The reflex layer
- * keeps the bot alive between/within steps at no LLM cost.
+ * Agentic loop with a SINGLE live session — no task queue. Every chat line is dropped into a
+ * `pending` inbox; the running session folds new lines into the SAME LLM context (the current
+ * plan + the results so far) at its next turn, so the model adjusts with full context instead
+ * of re-planning the whole job blind. `stop` cancels everything; an urgent ("now") line also
+ * cuts the current long-running step short so it's acted on at once. The reflex layer keeps the
+ * bot alive between/within steps at no LLM cost.
  */
 export class GoalRunner {
   private llm = new LLMManager();
   private skills = new SkillRegistry();
   private memory: ConversationMemory;
 
-  private queue: Task[] = [];
+  /** New player lines not yet shown to the LLM — folded into the live session at its next turn. */
+  private pending: Task[] = [];
+  /** The line currently being worked, plus a human-readable step, for instant status replies. */
   private current?: { task: Task; step: string };
   private worker?: Promise<void>;
+  /** Hard stop: unwind the whole session and clear the inbox. */
   private cancel = false;
+  /** Soft cut: abandon the current long-running step and re-plan with whatever just arrived. */
+  private abortStep = false;
   private bot?: Bot;
 
   constructor(
@@ -56,14 +63,15 @@ export class GoalRunner {
     logger.info(`Active ${this.llm.describe('planner')}`);
   }
 
-  /** Entry point for every non-manual chat line. Routes fast intents, else queues a task. */
+  /** Entry point for every non-manual chat line. Routes instant intents, else folds the line
+   *  into the live session. */
   async handle(bot: Bot, username: string, message: string): Promise<void> {
     this.bot = bot;
     const intent = classifyIntent(message);
 
     if (intent === 'stop') {
       this.stopAll();
-      bot.chat('Stopping and clearing my task list.');
+      bot.chat('Stopping and dropping what I was doing.');
       return;
     }
     if (intent === 'status') {
@@ -71,37 +79,27 @@ export class GoalRunner {
       return;
     }
 
-    // Asking for the same thing again while it's already running/queued isn't a new task —
-    // it's almost always "are you still on this?". Answer with live status instead of
-    // silently re-running (or stacking a duplicate behind) the same job.
-    if (intent === 'task') {
-      const norm = normalize(message);
-      if (this.current && normalize(this.current.task.message) === norm) {
-        bot.chat(this.describeActivity(bot));
-        return;
-      }
-      if (this.queue.some((t) => normalize(t.message) === norm)) {
-        bot.chat(`That's already queued up — ${this.describeActivity(bot)}`);
-        return;
-      }
+    // "are you still on it?" — same text as the live line, or one already waiting to be folded
+    // in: answer with status instead of stacking a duplicate.
+    const norm = normalize(message);
+    if (this.current && normalize(this.current.task.message) === norm) {
+      bot.chat(this.describeActivity(bot));
+      return;
+    }
+    if (this.pending.some((t) => normalize(t.message) === norm)) {
+      bot.chat(this.describeActivity(bot));
+      return;
     }
 
-    const task: Task = { requestedBy: username, message };
-    if (intent === 'now') {
-      // Pre-empt: drop the current task and jump the queue.
-      this.cancelCurrent();
-      this.queue.unshift(task);
-    } else {
-      this.queue.push(task);
-      // Only speak up when the task can't start immediately, so the player knows it's queued
-      // (not ignored). When idle we stay quiet and let the LLM reply once it has thought.
-      if (this.current) bot.chat(`Queued — I'll get to that after the current job.`);
-    }
+    this.pending.push({ requestedBy: username, message });
+    // Urgent: also cut the current long step short (only meaningful if something IS running) so
+    // the new line is acted on now, not just at the next natural batch boundary.
+    if (intent === 'now' && this.current) this.abortStep = true;
     this.ensureWorker(bot);
   }
 
-  /** True while a task is actively running (not just queued) — used to give peer agents a
-   *  direct busy reply instead of silently queuing their request behind this one. */
+  /** True while a line is actively being worked (not merely waiting in the inbox) — peer agents
+   *  use this for a direct busy reply instead of silently piling on. */
   isBusy(): boolean {
     return !!this.current;
   }
@@ -112,21 +110,24 @@ export class GoalRunner {
     const where = p ? `at (${p.x.toFixed(0)}, ${p.y.toFixed(0)}, ${p.z.toFixed(0)})` : 'somewhere';
     const vitals = `HP ${Math.round(bot.health ?? 0)}/20, food ${Math.round(bot.food ?? 0)}/20`;
     if (this.current) {
-      const queued = this.queue.length ? `, ${this.queue.length} more queued` : '';
-      return `Working on "${this.current.task.message}" — ${this.current.step}${queued}. ${where}, ${vitals}.`;
+      const waiting = this.pending.length ? `, ${this.pending.length} new message(s) to fold in` : '';
+      return `Working on "${this.current.task.message}" — ${this.current.step}${waiting}. ${where}, ${vitals}.`;
     }
-    if (this.queue.length) return `About to start ${this.queue.length} queued task(s). ${where}, ${vitals}.`;
+    if (this.pending.length) return `Picking up your message now. ${where}, ${vitals}.`;
     return `Idle ${where}, ${vitals}. Give me a task whenever.`;
   }
 
-  /** Cancel everything: current task, queue, movement, combat, gathering. */
+  /** Cancel everything: live session, inbox, movement, combat, gathering. */
   stopAll(): void {
-    this.queue = [];
-    this.cancelCurrent();
+    this.pending = [];
+    this.cancel = true;
+    this.cancelActiveActions();
   }
 
-  private cancelCurrent(): void {
-    this.cancel = true;
+  /** Tears down any in-flight bot actions and clears the "current" marker; the running session
+   *  notices `cancel`/`abortStep` on its next poll and unwinds. */
+  private cancelActiveActions(): void {
+    this.current = undefined;
     const bot = this.bot;
     if (!bot) return;
     try {
@@ -146,53 +147,37 @@ export class GoalRunner {
     }
     this.reflex.setSuppressDefense(false);
     this.reflex.setOnReleaseNav(undefined);
-    // Clear immediately so describeActivity/queued-detection reflect "stopped" right away —
-    // the in-flight runTask call may take a few more ticks to actually unwind (it polls
-    // shouldStop internally), but nothing should look "current" to the rest of the system
-    // while that happens, or a message sent right after "stop" wrongly queues behind it.
-    this.current = undefined;
   }
 
   private ensureWorker(bot: Bot): void {
     if (this.worker) return;
-    this.worker = this.runLoop(bot).finally(() => {
-      this.worker = undefined;
-    });
-  }
-
-  /** Background loop: drain the queue one task at a time. */
-  private async runLoop(bot: Bot): Promise<void> {
-    while (this.queue.length) {
-      const task = this.queue.shift()!;
-      this.current = { task, step: 'planning' };
-      this.cancel = false;
-      try {
-        await this.runTask(bot, task);
-      } catch (err) {
-        logger.error(`task failed: ${errMsg(err)}`);
-        bot.chat(`Ran into a problem: ${errMsg(err)}`);
-      }
-      this.current = undefined;
-    }
+    // Fresh start: clear any leftover stop/abort flags from a previous, now-finished session.
+    this.cancel = false;
+    this.abortStep = false;
+    this.worker = this.runSession(bot)
+      .catch((err) => logger.error(`session failed: ${errMsg(err)}`))
+      .finally(() => {
+        this.worker = undefined;
+        // A line that arrived in the tiny gap as the session wound down — pick it up.
+        if (this.pending.length) this.ensureWorker(bot);
+      });
   }
 
   /**
-   * Runs one task as a ReAct-style loop: act, observe the results, decide what's next —
-   * repeated until the LLM itself signals it's done (a turn with no tool calls), not just
-   * when a batch fails. A batch still stops at its first failed step (later steps usually
-   * depended on it), but **every** batch — success or failure — feeds the transcript back
-   * for another turn, since "this step succeeded" isn't the same as "the whole task is
-   * done" (e.g. checking a recipe succeeding is not the same as having acted on it).
-   * Native tool-calling models can narrate AND call tools in the same turn — that text is
-   * spoken immediately instead of being discarded. Implements ARCHITECTURE_PLAN.md
-   * §5.3b/§5.4 ("batch executor" + replan), generalized from failure-only to every turn.
+   * The single live session. Runs a ReAct loop (act, observe results, decide next) but, unlike
+   * a per-task runner, it stays alive and FOLDS newly-arrived player lines into the same running
+   * context at the top of each turn — the new line is shown alongside the results so far, so the
+   * model continues/adjusts the existing plan rather than restarting blind. Each line gets a
+   * fresh batch budget; when the model signals done (no tool calls) and nothing's waiting, the
+   * session ends.
    */
-  private async runTask(bot: Bot, task: Task): Promise<void> {
+  private async runSession(bot: Bot): Promise<void> {
     let provider: LLMProvider;
     try {
       provider = this.llm.forRole('planner');
     } catch (err) {
       bot.chat(`LLM not configured: ${errMsg(err)}`);
+      this.pending = [];
       return;
     }
 
@@ -200,38 +185,89 @@ export class GoalRunner {
     const mode = this.llm.toolMode('planner');
     const temperature = this.llm.temperature('planner');
     const maxTokens = this.llm.maxTokens('planner') ?? 2048;
-    const system = withContext(
-      mode === 'json' ? buildJsonSystemPrompt(bot.username, tools) : buildSystemPrompt(bot.username),
+    const baseSystem = mode === 'json' ? buildJsonSystemPrompt(bot.username, tools) : buildSystemPrompt(bot.username);
+
+    const ctx = {
+      requestedBy: '',
+      reflex: this.reflex,
+      shouldStop: (): boolean => this.cancel || this.abortStep,
+    };
+
+    const transcript: TranscriptEntry[] = [];
+    let messages: ChatMessage[] = [];
+    let system = withContext(
+      baseSystem,
       this.memory.summaryText(),
       craftingContextBlock(),
       agentExperienceContextBlock(),
       this.peerUsernames,
     );
-
-    const observation = this.perception.observe();
-    const baseUser = {
-      role: 'user' as const,
-      content: `Observation:\n${observation}\n\nPlayer "${task.requestedBy}" says: ${task.message}`,
-    };
-    let messages = [...this.memory.recent(), baseUser];
-
-    const ctx = { requestedBy: task.requestedBy, reflex: this.reflex, shouldStop: (): boolean => this.cancel };
-    const transcript: TranscriptEntry[] = [];
     let assistantRecord = '';
-    let finalMessage: string | null = null;
-    let cancelled = false;
-    // A small JSON-mode model often doesn't reliably recognize "everything I asked for just
-    // succeeded, I'm done" and instead re-emits the identical plan — without this it would
-    // repeat the whole job (re-gather, re-deliver, ...) forever, batch after batch.
+    let budget = 0;
     let lastPlanSig: string | null = null;
     let lastBatchAllOk = false;
 
-    for (let batch = 0; batch < MAX_BATCHES; batch++) {
-      logger.info(
-        batch === 0
-          ? `[loop ${batch + 1}] planner request: "${task.message}"`
-          : `[loop ${batch + 1}] planner request: replanning after ${transcript.length} result(s)`,
-      );
+    // Wrap up the line currently being worked: speak a reply (or a composed summary), record it
+    // to memory, learn from any generated-code steps, and reset per-line state for the next one.
+    const resolveCurrent = async (finalMessage: string): Promise<void> => {
+      await this.finishResponse(bot, this.current?.task, finalMessage, transcript, assistantRecord, lastBatchAllOk);
+      await this.memory.maybeCompact(this.summarizer());
+      assistantRecord = '';
+      this.current = undefined;
+      transcript.length = 0;
+      lastBatchAllOk = false;
+      lastPlanSig = null;
+      budget = 0;
+    };
+
+    while (!this.cancel) {
+      // 1) Fold any newly-arrived player lines into the live context.
+      if (this.pending.length) {
+        const incoming = this.pending.splice(0, this.pending.length);
+        const observation = this.perception.observe();
+        system = withContext(
+          baseSystem,
+          this.memory.summaryText(),
+          craftingContextBlock(),
+          agentExperienceContextBlock(),
+          this.peerUsernames,
+        );
+        messages = [...this.memory.recent()];
+        for (const t of incoming) {
+          ctx.requestedBy = t.requestedBy;
+          this.current = { task: t, step: 'planning' };
+          this.memory.addUser(t.requestedBy, t.message);
+        }
+        const latest = incoming[incoming.length - 1];
+        messages.push({
+          role: 'user',
+          content: `Observation:\n${observation}\n\nPlayer "${latest.requestedBy}" says: ${latest.message}`,
+        });
+        if (transcript.length) {
+          // The crux: a mid-task line is presented WITH what's already been done, so the model
+          // weaves it into the existing plan instead of rewriting the plan from nothing.
+          messages.push({
+            role: 'user',
+            content:
+              `You are already mid-task. Results so far:\n${describeTranscript(transcript)}\n` +
+              `Take the new message above into account and continue — don't redo finished steps.`,
+          });
+        }
+        budget = MAX_BATCHES;
+        lastPlanSig = null;
+      }
+
+      if (this.cancel) break;
+      if (budget <= 0) {
+        // Out of thinking budget for the current line (or nothing to do): wrap up whatever got
+        // done, then idle until something new arrives.
+        if (transcript.length || assistantRecord) await resolveCurrent('');
+        if (!this.pending.length) break;
+        continue;
+      }
+      budget--;
+
+      logger.info(`[loop] planner request (${transcript.length} result(s) so far)`);
       const res = await provider.chat({
         system,
         messages,
@@ -242,26 +278,29 @@ export class GoalRunner {
       const plan: PlanStep[] =
         mode === 'json' ? parseJsonPlan(res.text) : res.toolCalls.map((c) => ({ name: c.name, args: c.args }));
 
+      // 2) Done turn (no tool calls) — the model considers this line handled.
       if (plan.length === 0) {
-        // JSON mode's "done" turn is often bare JSON with no prose (e.g. `{"plan": []}`) —
-        // extract any real prose instead of treating the raw JSON text as a chat message.
-        finalMessage = mode === 'json' ? extractJsonProse(res.text) : res.text.trim();
-        logger.info(`[loop ${batch + 1}] planner response: done${finalMessage ? ` — "${finalMessage}"` : ''}`);
-        break;
+        const finalMessage = (mode === 'json' ? extractJsonProse(res.text) : res.text.trim()) || '';
+        logger.info(`[loop] planner response: done${finalMessage ? ` — "${finalMessage}"` : ''}`);
+        await resolveCurrent(finalMessage);
+        if (!this.pending.length) break;
+        continue;
       }
-      logger.info(`[loop ${batch + 1}] planner response: ${plan.map((p) => p.name).join(', ')}`);
+      logger.info(`[loop] planner response: ${plan.map((p) => p.name).join(', ')}`);
 
+      // A small JSON model often re-emits the identical, already-successful plan instead of
+      // recognizing it's done — treat an exact repeat as done so it can't loop forever.
       const planSig = JSON.stringify(plan.map((p) => [p.name, p.args]));
-      if (batch > 0 && lastBatchAllOk && planSig === lastPlanSig) {
-        logger.info(`[loop ${batch + 1}] same plan as the already-fully-successful last batch — treating as done.`);
-        break;
+      if (lastBatchAllOk && planSig === lastPlanSig) {
+        logger.info('[loop] same plan as the already-successful last batch — treating as done.');
+        await resolveCurrent('');
+        if (!this.pending.length) break;
+        continue;
       }
       lastPlanSig = planSig;
 
-      // Native models can say something WHILE calling a tool in the same turn (e.g. "checking
-      // the recipe now" + the getRecipe call) — speak that narration right away instead of
-      // discarding it. JSON mode's res.text is the structured plan itself, not prose, so this
-      // doesn't apply there (narrate-while-acting works there via an explicit sayInChat step).
+      // Native models can narrate WHILE calling a tool — speak that immediately. (JSON mode's
+      // text is the plan itself, so narration there goes through an explicit sayInChat step.)
       if (mode !== 'json') {
         const narration = res.text.trim();
         if (narration) {
@@ -270,97 +309,104 @@ export class GoalRunner {
         }
       }
 
+      // 3) Execute the batch.
       lastBatchAllOk = true;
+      let aborted = false;
       for (let i = 0; i < plan.length; i++) {
-        if (this.cancel) {
-          cancelled = true;
+        if (this.cancel) break;
+        if (this.abortStep) {
+          this.abortStep = false;
+          aborted = true;
           break;
         }
         const step = plan[i];
-        if (this.current) this.current.step = `batch ${batch + 1} step ${i + 1}/${plan.length}: ${step.name}`;
+        if (this.current) this.current.step = `step ${i + 1}/${plan.length}: ${step.name}`;
         const result = await this.skills.execute(bot, step.name, step.args, ctx);
         transcript.push({ tool: step.name, args: step.args, ok: result.ok, message: result.message });
         assistantRecord += `${describeAction(step.name, step.args, result.message)} `;
-        // A long-running step (gathering, crafting) may have been told to stop mid-flight and
-        // only now returned — check again here, not just before the step started, so we don't
-        // loop back and ask the LLM for yet another batch after the user said stop.
-        if (this.cancel) {
-          cancelled = true;
+        if (this.cancel) break;
+        if (this.abortStep) {
+          this.abortStep = false;
+          aborted = true;
           break;
         }
-        // Stop the rest of THIS batch on failure (later steps usually depended on it), but
-        // still loop back to the LLM below regardless of success or failure.
+        // Stop the rest of THIS batch on failure (later steps usually depended on it), but still
+        // loop back to the model below so it can decide how to recover.
         if (!result.ok) {
           lastBatchAllOk = false;
           break;
         }
       }
 
-      if (cancelled) break;
+      if (this.cancel) break;
+      if (aborted) {
+        // An urgent line cut in: loop back; the fold step at the top brings it in WITH the
+        // results so far, and the model re-plans from there.
+        continue;
+      }
 
-      // A batch that was ENTIRELY talk (no real action) and succeeded essentially never
-      // needs another follow-up turn — without this, a small model asked "anything else?"
-      // after just answering "hello" will keep inventing slightly different ways to say
-      // hello again, batch after batch, since rephrased text doesn't match the exact-repeat
-      // check below. Exempt batch 0: that's also the shape of "I'll check the recipe now"
-      // (talk-only) said WITHOUT the paired tool call the prompt asks for — continuing once
-      // gives the model a chance to actually call it next turn instead of just talking forever.
-      if (batch > 0 && lastBatchAllOk && plan.every((p) => p.name === 'sayInChat')) break;
+      // A batch that was ENTIRELY talk and succeeded is the model's reply — don't ask it to
+      // follow up (a small model would just keep rephrasing). Treat the line as handled.
+      if (lastBatchAllOk && plan.every((p) => p.name === 'sayInChat')) {
+        await resolveCurrent('');
+        if (!this.pending.length) break;
+        continue;
+      }
 
-      // Always loop back with the transcript so far — even a fully successful batch may not
-      // be the whole task. The LLM decides it's actually done by returning no more tool calls.
-      messages = [
-        ...this.memory.recent(),
-        baseUser,
-        { role: 'user' as const, content: `Tool results so far:\n${describeTranscript(transcript)}` },
-      ];
+      // 4) Loop back with the results appended so the model decides what's left.
+      messages.push({ role: 'user', content: `Tool results so far:\n${describeTranscript(transcript)}` });
     }
 
-    if (cancelled) {
-      assistantRecord += '(cancelled) ';
-    } else {
-      let reply = finalMessage?.trim() ?? '';
-      // If the bot's LAST step was speaking to the player (sayInChat), it has already delivered
-      // its answer this turn — composing and sending a separate wrap-up just makes it repeat
-      // itself a beat later in slightly different words (e.g. report inventory, then re-report
-      // it). Only auto-summarize when the run ended on a real action, or it never spoke at all.
-      const spokeLast = transcript.length > 0 && transcript[transcript.length - 1].tool === 'sayInChat';
-      if (!reply && !spokeLast) {
-        reply = transcript.length
-          ? await this.composeFinalReply(task, transcript)
-          : "I'm not sure how to help with that yet.";
-      }
-      if (reply) {
-        sendChat(bot, reply);
-        assistantRecord += reply;
-      }
-
-      // The main goal completed cleanly (last batch succeeded, nothing cancelled) AND
-      // generated code/a saved skill actually did some of the work — worth remembering the
-      // approach for next time, the same way CraftingExperience does for recipes.
-      const generatedSteps = transcript.filter(
-        (t) => t.ok && (t.tool === 'runCode' || this.skills.isDynamic(t.tool)),
-      );
-      if (lastBatchAllOk && generatedSteps.length) {
-        recordExperience(
-          task.message,
-          generatedSteps.map((t) => `${t.tool}(${JSON.stringify(t.args)})`).join('; '),
-          reply || 'Completed successfully.',
-        );
-      }
+    if (this.cancel) {
+      if (assistantRecord.trim()) this.memory.addAssistant(`${assistantRecord.trim()} (stopped)`);
+      await this.memory.maybeCompact(this.summarizer());
     }
-
-    this.memory.addUser(task.requestedBy, task.message);
-    this.memory.addAssistant(assistantRecord.trim() || '(no action)');
-    await this.memory.maybeCompact(this.summarizer());
+    this.current = undefined;
   }
 
   /**
-   * Composes one natural-language wrap-up from a finished transcript via the cheap "fast"
-   * role, instead of mechanically joining raw tool-result strings — falls back to that raw
-   * join if the call errors (e.g. "fast" role unavailable).
+   * Wrap-up for one handled line: speaks a reply (the model's own prose, or a composed summary
+   * if it acted without saying anything and didn't already end on sayInChat), records it to
+   * memory, and learns from any generated-code/dynamic-skill steps that did real work.
    */
-  private async composeFinalReply(task: Task, transcript: TranscriptEntry[]): Promise<string> {
+  private async finishResponse(
+    bot: Bot,
+    task: Task | undefined,
+    finalMessage: string,
+    transcript: TranscriptEntry[],
+    assistantRecord: string,
+    lastBatchAllOk: boolean,
+  ): Promise<void> {
+    let reply = (finalMessage ?? '').trim();
+    // If the bot's last step was already sayInChat, it has delivered its answer — a composed
+    // wrap-up would just repeat it a beat later in slightly different words.
+    const spokeLast = transcript.length > 0 && transcript[transcript.length - 1].tool === 'sayInChat';
+    if (!reply && !spokeLast) {
+      reply = transcript.length
+        ? await this.composeFinalReply(task, transcript)
+        : "I'm not sure how to help with that yet.";
+    }
+    if (reply) sendChat(bot, reply);
+
+    const record = `${assistantRecord}${reply}`.trim();
+    this.memory.addAssistant(record || '(no action)');
+
+    const generatedSteps = transcript.filter((t) => t.ok && (t.tool === 'runCode' || this.skills.isDynamic(t.tool)));
+    if (lastBatchAllOk && generatedSteps.length && task) {
+      recordExperience(
+        task.message,
+        generatedSteps.map((t) => `${t.tool}(${JSON.stringify(t.args)})`).join('; '),
+        reply || 'Completed successfully.',
+      );
+    }
+  }
+
+  /**
+   * Composes one natural-language wrap-up from a finished transcript via the cheap "fast" role,
+   * instead of mechanically joining raw tool-result strings — falls back to that raw join if the
+   * call errors (e.g. "fast" role unavailable).
+   */
+  private async composeFinalReply(task: Task | undefined, transcript: TranscriptEntry[]): Promise<string> {
     const raw = transcript.map((t) => t.message).join(' ').slice(0, 300);
     try {
       const res = await this.summarizer().chat({
@@ -371,7 +417,7 @@ export class GoalRunner {
           {
             role: 'user',
             content:
-              `Player "${task.requestedBy}" asked: "${task.message}"\n\n` +
+              `Player "${task?.requestedBy ?? 'someone'}" asked: "${task?.message ?? ''}"\n\n` +
               `Actions taken:\n${describeTranscript(transcript)}\n\nCompose the reply.`,
           },
         ],

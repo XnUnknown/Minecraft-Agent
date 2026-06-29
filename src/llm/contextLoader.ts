@@ -49,7 +49,9 @@ function readSections(mode: string): Section[] {
   const sections: Section[] = files.map((file) => ({
     file,
     codeOnly: /\.code\.md$/i.test(file),
-    body: readFileSync(join(dir, file), 'utf8').replace(/\s+$/, ''),
+    // Normalize CRLF (Git may check these out with Windows line endings) then strip trailing
+    // whitespace so single-newline joins stay clean.
+    body: readFileSync(join(dir, file), 'utf8').replace(/\r\n/g, '\n').replace(/\s+$/, ''),
   }));
   cache.set(mode, sections);
   logger.info(`Loaded ${sections.length} static context section(s) from ${dir}.`);

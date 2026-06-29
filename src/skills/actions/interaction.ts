@@ -207,8 +207,22 @@ export const useFurnace: Skill = {
       return { ok: false, message: `No usable fuel (tried ${fuelName ?? 'coal/charcoal/planks'}). Bring coal or another fuel.` };
     }
 
+    // Taking the result (and draining leftovers) needs a free inventory slot — without one,
+    // mineflayer throws "destination full". Catch that up front with a clear message.
+    const emptySlots =
+      typeof (bot.inventory as unknown as { emptySlotCount?: () => number }).emptySlotCount === 'function'
+        ? (bot.inventory as unknown as { emptySlotCount: () => number }).emptySlotCount()
+        : 1;
+    if (emptySlots === 0) {
+      return { ok: false, message: 'My inventory is full — I need a free slot to collect the smelted result. Drop or stash something first.' };
+    }
+
     const furnace = await bot.openFurnace(furnaceBlock);
     try {
+      // A furnace left dirty from a prior partial smelt (leftover output/input/fuel) makes the
+      // next load fail with "destination full" — drain it back to inventory before loading.
+      await drainFurnace(furnace);
+
       // Roughly one fuel item per ~8 smelts; load a safe amount of what we have.
       const fuelToLoad = Math.min(bot.inventory.count(fuelItem.id, null), Math.max(1, Math.ceil(count / 8)));
       await furnace.putFuel(fuelItem.id, null, fuelToLoad);
@@ -237,12 +251,22 @@ export const useFurnace: Skill = {
 
       let taken = 0;
       if (furnace.outputItem()) {
-        const t = await furnace.takeOutput();
-        taken = t?.count ?? 0;
+        try {
+          const t = await furnace.takeOutput();
+          taken = t?.count ?? 0;
+        } catch {
+          return { ok: false, message: 'Smelted, but couldn\'t collect the result (inventory full) — free a slot and try again.' };
+        }
       }
       if (taken >= count) return { ok: true, message: `Smelted ${taken}x from ${count}x ${inputName}.` };
       if (taken > 0) return { ok: true, message: `Smelted ${taken}x ${inputName} so far (took the finished ones; the rest hadn't cooked yet).` };
       return { ok: false, message: `Nothing smelted — likely wrong/insufficient fuel or an un-smeltable input (${inputName}).` };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/full/i.test(msg)) {
+        return { ok: false, message: 'The furnace or my inventory was full — free up an inventory slot and try again.' };
+      }
+      return { ok: false, message: `Furnace problem: ${msg}` };
     } finally {
       try {
         furnace.close();
@@ -252,6 +276,34 @@ export const useFurnace: Skill = {
     }
   },
 };
+
+/** Empties a furnace's output/input/fuel slots back into the bot's inventory (best-effort), so a
+ *  furnace left dirty from a prior smelt doesn't make the next putInput/putFuel hit "destination
+ *  full". Each take is guarded — an empty slot or no inventory room just no-ops. */
+async function drainFurnace(furnace: {
+  outputItem(): unknown;
+  inputItem(): unknown;
+  fuelItem(): unknown;
+  takeOutput(): Promise<unknown>;
+  takeInput(): Promise<unknown>;
+  takeFuel(): Promise<unknown>;
+}): Promise<void> {
+  try {
+    if (furnace.outputItem()) await furnace.takeOutput();
+  } catch {
+    /* empty or no room */
+  }
+  try {
+    if (furnace.inputItem()) await furnace.takeInput();
+  } catch {
+    /* empty or no room */
+  }
+  try {
+    if (furnace.fuelItem()) await furnace.takeFuel();
+  } catch {
+    /* empty or no room */
+  }
+}
 
 export const useEnchantmentTable: Skill = {
   def: {

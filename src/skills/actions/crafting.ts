@@ -8,6 +8,7 @@ import { searchOutward, walkToward } from '../../util/navigate';
 import { placeNear } from '../../util/building';
 import { equipBestToolForBlock } from '../../util/equip';
 import { collectBlock } from './gathering';
+import { logger } from '../../util/logger';
 
 const TABLE_NAME = 'crafting_table';
 /** Caps how many ingredient levels we'll auto-resolve (log -> planks -> stick -> tool is 3
@@ -57,7 +58,11 @@ export const craftItem: Skill = {
     const wideSearch = args.wideSearch !== false;
     const session: TableSession = { table: null, placedByUs: false };
 
+    logger.info(`[craft] REQUEST craft ${count}x ${itemName} (wideSearch=${wideSearch})`);
+    logger.info(`[craft] inventory at start: ${inventorySummary(bot)}`);
+
     const result = await resolveAndCraft(bot, itemName, count, ctx, 0, session, wideSearch);
+    logger.info(`[craft] RESULT (${result.ok ? 'OK' : 'FAILED'}): ${result.message}`);
 
     if (session.placedByUs) {
       const cleanup = await collectTableBack(bot, session, ctx);
@@ -118,22 +123,15 @@ export const getRecipe: Skill = {
     const tableNote = recipe.requiresTable ? 'needs a crafting table' : 'no table needed';
     const base = `${itemName}: ${ingredients.join(' + ') || 'no ingredients'} -> ${recipe.result.count}x ${itemName} (${tableNote}).`;
 
-    // Full recursive base-material breakdown — what raw resources this ultimately bottoms out
-    // in, all the way down, and how much of each is still missing from inventory.
+    // Full recursive base-material breakdown — the EXACT raw resources this ultimately bottoms
+    // out in, all the way down (quantities only, not an inventory-dependent shortfall).
     const raw = new Map<string, number>();
     rawRequirements(bot, itemName, 1, table, 0, raw);
-    const rawParts = [...raw.entries()].map(([name, need]) => {
-      const id = bot.registry.itemsByName[name]?.id;
-      const have = id !== undefined ? bot.inventory.count(id, null) : 0;
-      const short = Math.max(0, need - have);
-      return short > 0 ? `${need}x ${name} (need ${short} more)` : `${need}x ${name} (have)`;
-    });
-    const rawNote = rawParts.length ? ` Base materials needed: ${rawParts.join(', ')}.` : '';
+    const rawParts = [...raw.entries()].map(([name, need]) => `${need}x ${name}`);
+    const rawNote = rawParts.length ? ` Raw base materials: ${rawParts.join(' + ')}.` : '';
 
     const craftableNow = bot.recipesFor(itemData.id, null, 1, table).length > 0;
-    return craftableNow
-      ? { ok: true, message: `${base} Craftable right now.${rawNote}` }
-      : { ok: true, message: `${base} Missing ${describeMissing(bot, recipe, 1)}.${rawNote}` };
+    return { ok: true, message: `${base}${rawNote} ${craftableNow ? 'Craftable right now.' : 'Not craftable from current inventory yet.'}` };
   },
 };
 
@@ -227,25 +225,33 @@ async function findOrMakeTable(
   if (ctx.shouldStop?.()) return null;
   // Only roam looking for an existing table when wide search is allowed; otherwise stick to
   // what's already in render range (we may still craft + place our own below).
+  logger.info(`[craft] no crafting table in reach; ${wideSearch ? 'searching wider for one' : 'wide search off, will try to make one'}.`);
   if (wideSearch) await searchOutward(bot, () => !!nearbyTable(bot), ctx.reflex, ctx.shouldStop);
   const found = nearbyTable(bot);
   if (found) {
+    logger.info(`[craft] found existing crafting table @${vecStr(found.position)}.`);
     session.table = found;
     return found;
   }
   if (depth >= MAX_DEPTH || ctx.shouldStop?.()) return null;
 
+  logger.info('[craft] no table found — crafting a new crafting_table (this consumes 4 planks).');
   const made = await resolveAndCraft(bot, TABLE_NAME, 1, ctx, depth + 1, session, wideSearch);
   notes.push(made.message);
-  if (!made.ok) return null;
+  if (!made.ok) {
+    logger.warn(`[craft] couldn't make a crafting table: ${made.message}`);
+    return null;
+  }
 
   const placed = await placeNear(bot, TABLE_NAME);
   if (!placed) {
+    logger.warn('[craft] made a crafting table but found nowhere to place it.');
     notes.push("Made a crafting table but couldn't find a spot to place it.");
     return null;
   }
   const table = nearbyTable(bot);
   if (table) {
+    logger.info(`[craft] placed our own crafting table @${vecStr(table.position)}.`);
     session.table = table;
     session.placedByUs = true;
   }
@@ -265,17 +271,51 @@ async function doCraft(
   // output items we want" — each repeat yields recipe.result.count items, so convert first.
   const craftCount = Math.ceil(count / recipe.result.count);
   const before = bot.inventory.count(recipe.result.id, recipe.result.metadata);
+
+  // The real cause of spurious "missing ingredient" on Paper servers (window/inventory slot
+  // desync) is fixed in mineflayer itself via patches/mineflayer+4.37.1.patch. We still walk
+  // right up to the table and face it before crafting as plain good hygiene — it keeps the
+  // window open reliably and avoids edge-of-reach click failures.
+  if (usedTable) {
+    await walkToward(bot, () => usedTable.position, 2, ctx.reflex, ctx.shouldStop);
+    try {
+      await bot.lookAt(usedTable.position.offset(0.5, 0.5, 0.5), true);
+    } catch {
+      /* ignore look failures */
+    }
+  }
+
+  const tableDist = usedTable ? bot.entity.position.distanceTo(usedTable.position).toFixed(1) : 'n/a';
+  logger.info(
+    `[craft] doCraft ${itemName}: repeating recipe ${craftCount}x (yields ${recipe.result.count} each), ` +
+      `table=${usedTable ? `@${vecStr(usedTable.position)} dist ${tableDist}m` : 'none'}; ` +
+      `ingredients on hand -> ${ingredientStatus(bot, recipe, count)}`,
+  );
   let lastErr: string | null = null;
   for (let i = 0; i < craftCount; i++) {
     if (ctx.shouldStop?.()) break;
     try {
       await withTimeout(bot.craft(recipe, 1, usedTable ?? undefined), 20000);
+      logger.info(`[craft] doCraft ${itemName}: op ${i + 1}/${craftCount} OK.`);
     } catch (err) {
       lastErr = err instanceof Error ? err.message : String(err);
+      // A failed table-craft leaves ingredients sitting in the crafting grid, where
+      // inventory.count() reads them as 0. Close the window so they fall back into inventory
+      // (otherwise a retry/replan thinks the materials are gone).
+      try {
+        if (bot.currentWindow) bot.closeWindow(bot.currentWindow);
+      } catch {
+        /* ignore */
+      }
+      logger.warn(
+        `[craft] doCraft ${itemName}: op ${i + 1}/${craftCount} FAILED: ${lastErr}. ` +
+          `Ingredient status now -> ${ingredientStatus(bot, recipe, count)}`,
+      );
       break;
     }
   }
   const made = bot.inventory.count(recipe.result.id, recipe.result.metadata) - before;
+  logger.info(`[craft] doCraft ${itemName}: made ${made} (wanted ${count}).`);
 
   if (made <= 0) {
     return { ok: false, message: prefix(notes, lastErr ? `Couldn't craft ${itemName}: ${lastErr}` : `Couldn't craft ${itemName}.`) };
@@ -308,17 +348,26 @@ async function resolveAndCraft(
 ): Promise<SkillResult> {
   if (ctx.shouldStop?.()) return { ok: false, message: 'Cancelled.' };
 
+  const pad = '  '.repeat(depth);
   const itemData = bot.registry.itemsByName[itemName];
   if (!itemData) return { ok: false, message: `I don't know an item called "${itemName}".` };
 
   const candidates = bot.recipesAll(itemData.id, null, true);
   if (!candidates.length) {
     // No recipe exists at all — it's a raw/world resource, not something we craft.
+    logger.info(`[craft] ${pad}${itemName} x${count}: no recipe -> treat as raw resource, gathering it.`);
     return collectBlock.run(bot, { blockType: itemName, count, wideSearch }, ctx);
   }
 
   const notes: string[] = [];
   const mightNeedTable = candidates.every((r) => r.requiresTable);
+  // Report exactly what this item takes and what's on hand, before we try anything.
+  logger.info(
+    `[craft] ${pad}resolve ${itemName} x${count} (depth ${depth}): ` +
+      `${candidates.length} recipe(s), needsTable=${mightNeedTable}; ` +
+      `ingredients -> ${ingredientStatus(bot, candidates[0], count)}`,
+  );
+
   let table = await getTable(bot, ctx, depth, notes, mightNeedTable, session, wideSearch);
   let { recipe, usedTable } = pickRecipes(bot, itemData.id, count, table);
 
@@ -329,6 +378,9 @@ async function resolveAndCraft(
   }
 
   if (recipe) {
+    logger.info(
+      `[craft] ${pad}${itemName}: craftable now from inventory (table=${usedTable ? `@${vecStr(usedTable.position)}` : 'none'}). Crafting.`,
+    );
     // Ingredient resolution (gathering, pre-crafting) may have walked the bot away from the
     // table — without this it can fail with a generic/misleading error simply because it's
     // not actually standing next to the table it's about to try to activate.
@@ -339,10 +391,15 @@ async function resolveAndCraft(
   const anyRecipe = bot.recipesAll(itemData.id, null, table ?? true)[0];
   if (!anyRecipe) return { ok: false, message: prefix(notes, `There's no known recipe for "${itemName}".`) };
   if (anyRecipe.requiresTable && !table) {
+    logger.warn(`[craft] ${pad}${itemName}: needs a crafting table, none found or made.`);
     return { ok: false, message: prefix(notes, `Crafting ${itemName} needs a crafting table, and I couldn't find or make one.`) };
   }
+  logger.info(
+    `[craft] ${pad}${itemName}: not craftable yet, resolving ingredients -> ${ingredientStatus(bot, anyRecipe, count)}`,
+  );
   if (depth >= MAX_DEPTH || ctx.shouldStop?.()) {
-    return { ok: false, message: prefix(notes, `Can't craft ${itemName} yet — missing ${describeMissing(bot, anyRecipe, count)}.`) };
+    logger.warn(`[craft] ${pad}${itemName}: stopping at depth ${depth} (cap ${MAX_DEPTH}). Requires ${describeRequirements(bot, anyRecipe, count)}.`);
+    return { ok: false, message: prefix(notes, `Can't craft ${itemName} right now — it requires ${describeRequirements(bot, anyRecipe, count)}.`) };
   }
 
   const craftCount = Math.ceil(count / anyRecipe.result.count);
@@ -356,7 +413,9 @@ async function resolveAndCraft(
     if (have >= need) continue;
     const ingredientName = bot.registry.items[d.id]?.name;
     if (!ingredientName) continue;
+    logger.info(`[craft] ${pad}-> need ${need - have} more ${ingredientName} for ${itemName} (have ${have}/${need}); resolving it.`);
     const sub = await resolveAndCraft(bot, ingredientName, need - have, ctx, depth + 1, session, wideSearch);
+    logger.info(`[craft] ${pad}<- ${ingredientName}: ${sub.ok ? 'OK' : 'FAILED'} — ${sub.message}`);
     notes.push(sub.message);
   }
 
@@ -364,7 +423,11 @@ async function resolveAndCraft(
 
   const retry = pickRecipes(bot, itemData.id, count, table);
   if (!retry.recipe) {
-    return { ok: false, message: prefix(notes, `Can't craft ${itemName} yet — missing ${describeMissing(bot, anyRecipe, count)}.`) };
+    logger.warn(
+      `[craft] ${pad}${itemName}: STILL not craftable after resolving ingredients. ` +
+        `Final ingredient status -> ${ingredientStatus(bot, anyRecipe, count)}`,
+    );
+    return { ok: false, message: prefix(notes, `Can't craft ${itemName} right now — it requires ${describeRequirements(bot, anyRecipe, count)}.`) };
   }
   // Same reasoning as above: gathering ingredients just now may have moved the bot off the table.
   if (retry.usedTable) await walkToward(bot, () => retry.usedTable!.position, 3, ctx.reflex, ctx.shouldStop);
@@ -396,18 +459,43 @@ async function collectTableBack(bot: Bot, session: TableSession, ctx: SkillConte
   }
 }
 
-/** Names what's still missing for a recipe, so a failed craft is actionable, not just "no". */
-function describeMissing(bot: Bot, recipe: Recipe, want: number): string {
+/** Per-ingredient need-vs-have snapshot for a recipe, for diagnostic logging — shows exactly
+ *  which ingredient is short (by EXACT name + metadata, so e.g. a oak_planks requirement that
+ *  spruce_planks can't satisfy is obvious in the log). */
+function ingredientStatus(bot: Bot, recipe: Recipe, want: number): string {
   const craftCount = Math.ceil(want / recipe.result.count);
   const parts: string[] = [];
   for (const d of recipe.delta) {
     if (d.count >= 0) continue;
     const need = -d.count * craftCount;
     const have = bot.inventory.count(d.id, d.metadata);
-    if (have < need) {
-      const name = bot.registry.items[d.id]?.name ?? `item#${d.id}`;
-      parts.push(`${need - have}x ${name}`);
-    }
+    const name = bot.registry.items[d.id]?.name ?? `item#${d.id}`;
+    parts.push(`${name} need ${need} have ${have}${have < need ? ` (SHORT ${need - have})` : ' (ok)'}`);
   }
-  return parts.length ? parts.join(', ') : 'ingredients I do not have';
+  return parts.length ? parts.join(', ') : 'no ingredients';
+}
+
+/** Compact dump of everything currently in the bot's inventory, for diagnostic logging. */
+function inventorySummary(bot: Bot): string {
+  const items = bot.inventory.items().map((i) => `${i.count}x ${i.name}`);
+  return items.length ? items.join(', ') : '(empty)';
+}
+
+function vecStr(p: { x: number; y: number; z: number }): string {
+  return `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)}`;
+}
+
+/** Lists a recipe's EXACT, full ingredient requirements (every ingredient + quantity, scaled
+ *  to the requested amount) — independent of current inventory, so a craft result reports
+ *  what the item actually takes to make, not an inventory-dependent shortfall. */
+function describeRequirements(bot: Bot, recipe: Recipe, want: number): string {
+  const craftCount = Math.ceil(want / recipe.result.count);
+  const parts: string[] = [];
+  for (const d of recipe.delta) {
+    if (d.count >= 0) continue;
+    const need = -d.count * craftCount;
+    const name = bot.registry.items[d.id]?.name ?? `item#${d.id}`;
+    parts.push(`${need}x ${name}`);
+  }
+  return parts.length ? parts.join(' + ') : 'no ingredients';
 }

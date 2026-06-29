@@ -9,7 +9,7 @@ roles:
   planner:
     provider: ollama        # openai | claude | ollama
     mode: cloud             # ollama only: local | cloud
-    model: nemotron-3-ultra
+    model: gemma4:31b
     toolCalling: json       # Gemma has no native tool calling -> use JSON fallback
     temperature: 0.4
     maxTokens: 2048         # generous headroom for plans/reasoning (was silently provider-default)
@@ -17,7 +17,7 @@ roles:
   fast:
     provider: ollama
     mode: cloud
-    model: nemotron-3-ultra
+    model: gemma4:31b
     toolCalling: json
 
   embeddings:

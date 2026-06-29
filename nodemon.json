@@ -1,0 +1,7 @@
+{
+  "watch": ["src", "config"],
+  "ext": "ts,yaml",
+  "ignore": ["data/**", "patches/**"],
+  "exec": "tsx src/index.ts",
+  "delay": 500
+}

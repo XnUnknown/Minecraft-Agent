@@ -320,10 +320,12 @@ export class GoalRunner {
       assistantRecord += '(cancelled) ';
     } else {
       let reply = finalMessage?.trim() ?? '';
-      // If every action taken was just talking, sayInChat already said what needed saying —
-      // a composed wrap-up would just awkwardly repeat the greeting.
-      const onlyTalked = transcript.length > 0 && transcript.every((t) => t.tool === 'sayInChat');
-      if (!reply && !onlyTalked) {
+      // If the bot's LAST step was speaking to the player (sayInChat), it has already delivered
+      // its answer this turn — composing and sending a separate wrap-up just makes it repeat
+      // itself a beat later in slightly different words (e.g. report inventory, then re-report
+      // it). Only auto-summarize when the run ended on a real action, or it never spoke at all.
+      const spokeLast = transcript.length > 0 && transcript[transcript.length - 1].tool === 'sayInChat';
+      if (!reply && !spokeLast) {
         reply = transcript.length
           ? await this.composeFinalReply(task, transcript)
           : "I'm not sure how to help with that yet.";

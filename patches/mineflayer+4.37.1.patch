@@ -1,0 +1,49 @@
+diff --git a/node_modules/mineflayer/lib/plugins/craft.js b/node_modules/mineflayer/lib/plugins/craft.js
+index a5fe563..ce324f7 100644
+--- a/node_modules/mineflayer/lib/plugins/craft.js
++++ b/node_modules/mineflayer/lib/plugins/craft.js
+@@ -64,6 +64,26 @@ function inject (bot) {
+         await nextIngredientsClick()
+       }
+ 
++      // Paper (and other Spigot forks) send aggressive full inventory resyncs with
++      // windowId=0 after each window_click, which mineflayer applies to bot.inventory but
++      // NOT to this crafting-table window. The window's slots then go stale mid-craft and
++      // window.findInventoryItem() can't find an ingredient that bot.inventory still has,
++      // making bot.craft() throw a spurious 'missing ingredient'. Fall back to bot.inventory
++      // (which Paper keeps correct), remap the slot into window coordinates, and patch the
++      // window slot so subsequent clicks target the right place. No-op on vanilla, where the
++      // fast path already finds the item.
++      function findItemSynced (itemId, metadata) {
++        const fromWindow = window.findInventoryItem(itemId, metadata)
++        if (fromWindow) return fromWindow
++        const invItem = bot.inventory.findInventoryItem(itemId, metadata)
++        if (!invItem) return null
++        const slotOffset = window.inventoryStart - bot.inventory.inventoryStart
++        const windowSlot = invItem.slot + slotOffset
++        invItem.slot = windowSlot
++        window.updateSlot(windowSlot, invItem)
++        return invItem
++      }
++
+       function incrementShapeIterator () {
+         it.x += 1
+         if (it.x >= it.row.length) {
+@@ -93,7 +113,7 @@ function inject (bot) {
+           (ingredient.metadata != null &&
+             window.selectedItem.metadata !== ingredient.metadata)) {
+           // we are not holding the item we need. click it.
+-          const sourceItem = window.findInventoryItem(ingredient.id, ingredient.metadata)
++          const sourceItem = findItemSynced(ingredient.id, ingredient.metadata)
+           if (!sourceItem) throw new Error('missing ingredient')
+           if (originalSourceSlot == null) originalSourceSlot = sourceItem.slot
+           await bot.clickWindow(sourceItem.slot, 0, 0)
+@@ -109,7 +129,7 @@ function inject (bot) {
+           (ingredient.metadata != null &&
+             window.selectedItem.metadata !== ingredient.metadata)) {
+           // we are not holding the item we need. click it.
+-          const sourceItem = window.findInventoryItem(ingredient.id, ingredient.metadata)
++          const sourceItem = findItemSynced(ingredient.id, ingredient.metadata)
+           if (!sourceItem) throw new Error('missing ingredient')
+           if (originalSourceSlot == null) originalSourceSlot = sourceItem.slot
+           await bot.clickWindow(sourceItem.slot, 0, 0)

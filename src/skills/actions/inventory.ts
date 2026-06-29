@@ -18,7 +18,16 @@ export const tossItem: Skill = {
   },
   async run(bot, args) {
     const name = String(args.item ?? '').toLowerCase();
-    const item = bot.inventory.items().find((i) => i.name === name || i.name.includes(name));
+    const items = bot.inventory.items();
+    // Exact name always wins — otherwise "diamond" would match "diamond_pickaxe"/"diamond_sword"
+    // via substring and drop the wrong thing. Only fall back to a partial match when there is no
+    // exact one, and prefer the shortest matching name (closest to the plain item, not a variant).
+    let item = items.find((i) => i.name === name);
+    if (!item) {
+      item = items
+        .filter((i) => i.name.includes(name))
+        .sort((a, b) => a.name.length - b.name.length)[0];
+    }
     if (!item) return { ok: false, message: `I don't have any ${name}.` };
 
     const count = clampInt(args.count, 1, item.count, item.count);

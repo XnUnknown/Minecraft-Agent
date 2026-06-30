@@ -29,7 +29,9 @@ export class OllamaProvider implements LLMProvider {
     const body: Record<string, unknown> = {
       model: this.model,
       stream: false,
-      options: { temperature: req.temperature ?? 0.4 },
+      // num_predict is Ollama's max-output-tokens knob; without it, some models default to a
+      // tiny generation budget (as low as 128), silently truncating/garbling JSON tool plans.
+      options: { temperature: req.temperature ?? 0.4, num_predict: req.maxTokens ?? 1024 },
       messages: [
         { role: 'system', content: req.system },
         ...req.messages.map((m) => ({ role: m.role, content: m.content })),

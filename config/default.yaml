@@ -11,6 +11,24 @@ agent:
   username: Steve_AI     # the bot's in-game name
   brain: brains/default  # portable brain folder (used from Stage 9)
 
+# Multi-agent: uncomment to run more than one bot. If present, this REPLACES `agent:`
+# above. Each entry's `brain` defaults to agent.brain if omitted. With only one agent
+# (the default, agents: absent), chat needs no name — unchanged from today. With more
+# than one, a message must name the agent(s) it's for, anywhere in the text.
+# agents:
+#   - username: Steve_AI
+#   - username: Steve_AI1
+#   - username: Steve_AI2
+
 conversation:
-  maxMessages: 16        # compact the chat history once it exceeds this many messages
-  keepRecent: 6          # messages kept verbatim after compaction (older ones -> summary)
+  maxMessages: 32       # compact the chat history once it exceeds this many messages
+  keepRecent: 20         # messages kept verbatim after compaction (older ones -> summary)
+
+skills:
+  # Sandbox code execution. When false (default), the `runCode`/`saveSkill` tools are NOT
+  # offered to the planner and saved dynamic skills aren't loaded — the bot uses only its
+  # built-in tools. Set true to let the model write & run JavaScript against the bot.
+  codeExecution: false
+
+viewer:
+  port: 3000             # 3D POV viewer (prismarine-viewer) — toggle in-game with "pov"/"pov off"

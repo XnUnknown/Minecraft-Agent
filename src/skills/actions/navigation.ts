@@ -1,8 +1,8 @@
-import baritonePkg from '@miner-org/mineflayer-baritone';
+import pathfinderPkg from 'mineflayer-pathfinder';
 import type { Skill } from '../types';
 import { walkToward } from '../../util/navigate';
 
-const { goals } = baritonePkg;
+const { goals } = pathfinderPkg;
 
 export const goToPlayer: Skill = {
   def: {
@@ -21,7 +21,9 @@ export const goToPlayer: Skill = {
   async run(bot, args, ctx) {
     const playerName = String(args.playerName ?? '');
     const range = Number.isFinite(Number(args.range)) ? Number(args.range) : 2;
-    if (!bot.players[playerName]?.entity) return `Cannot see player "${playerName}" — they may be out of range.`;
+    if (!bot.players[playerName]?.entity) {
+      return { ok: false, message: `Cannot see player "${playerName}" — they may be out of range.` };
+    }
     // Wait until we actually reach them (and resume if the reflex pre-empts us en route).
     const arrived = await walkToward(
       bot,
@@ -30,7 +32,9 @@ export const goToPlayer: Skill = {
       ctx.reflex,
       ctx.shouldStop,
     );
-    return arrived ? `Reached ${playerName}.` : `Couldn't get to ${playerName} (lost sight or path blocked).`;
+    return arrived
+      ? { ok: true, message: `Reached ${playerName}.` }
+      : { ok: false, message: `Couldn't get to ${playerName} (lost sight or path blocked).` };
   },
 };
 
@@ -55,9 +59,11 @@ export const goToCoordinates: Skill = {
     const y = Number(args.y);
     const z = Number(args.z);
     const range = Number.isFinite(Number(args.range)) ? Number(args.range) : 1;
-    if (![x, y, z].every((n) => Number.isFinite(n))) return 'Invalid coordinates.';
+    if (![x, y, z].every((n) => Number.isFinite(n))) return { ok: false, message: 'Invalid coordinates.' };
     const arrived = await walkToward(bot, () => ({ x, y, z }), range, ctx.reflex, ctx.shouldStop);
-    return arrived ? `Arrived at (${x}, ${y}, ${z}).` : `Couldn't reach (${x}, ${y}, ${z}) (path blocked).`;
+    return arrived
+      ? { ok: true, message: `Arrived at (${x}, ${y}, ${z}).` }
+      : { ok: false, message: `Couldn't reach (${x}, ${y}, ${z}) (path blocked).` };
   },
 };
 
@@ -78,19 +84,22 @@ export const followPlayer: Skill = {
   },
   async run(bot, args, ctx) {
     const playerName = String(args.playerName ?? '');
-    const range = Number.isFinite(Number(args.range)) ? Number(args.range) : 3;
+    const range = Number.isFinite(Number(args.range)) ? Number(args.range) : 2;
     const setFollow = (): boolean => {
       const target = bot.players[playerName]?.entity;
       if (!target) return false;
-      bot.ashfinder.followEntity(target, { distance: range });
+      // Dynamic goal: pathfinder re-routes as the player moves, so it keeps following.
+      bot.pathfinder.setGoal(new goals.GoalFollow(target, range), true);
       return true;
     };
-    if (!setFollow()) return `Cannot see player "${playerName}" — they may be out of range.`;
+    if (!setFollow()) {
+      return { ok: false, message: `Cannot see player "${playerName}" — they may be out of range.` };
+    }
     // If the reflex pre-empts us (flee/defend), re-establish the follow once it releases.
     ctx.reflex?.setOnReleaseNav(() => {
       setFollow();
     });
-    return `Now following ${playerName} until you tell me to stop.`;
+    return { ok: true, message: `Now following ${playerName} until you tell me to stop.` };
   },
 };
 
@@ -102,8 +111,7 @@ export const stopMoving: Skill = {
   },
   async run(bot, _args, ctx) {
     ctx.reflex?.setOnReleaseNav(undefined);
-    bot.ashfinder.stopFollowing();
-    bot.ashfinder.stop();
-    return 'Stopped moving.';
+    bot.pathfinder.setGoal(null);
+    return { ok: true, message: 'Stopped moving.' };
   },
 };

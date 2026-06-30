@@ -1,0 +1,88 @@
+diff --git a/node_modules/mineflayer-pathfinder/index.js b/node_modules/mineflayer-pathfinder/index.js
+index b38bd30..4db994d 100644
+--- a/node_modules/mineflayer-pathfinder/index.js
++++ b/node_modules/mineflayer-pathfinder/index.js
+@@ -26,6 +26,9 @@ function inject (bot) {
+   let digging = false
+   let placing = false
+   let placingBlock = null
++  let placeJumpStart = null
++  let placeAttempts = 0
++  let placeLastAttempt = 0
+   let lastNodeTime = performance.now()
+   let returningPos = null
+   let stopPathing = false
+@@ -129,6 +132,9 @@ function inject (bot) {
+       bot.stopDigging()
+     }
+     placing = false
++    placeJumpStart = null
++    placeAttempts = 0
++    placeLastAttempt = 0
+     pathUpdated = false
+     astarContext = null
+     lockEquipItem.release()
+@@ -515,6 +521,9 @@ function inject (bot) {
+       if (!placing) {
+         placing = true
+         placingBlock = nextPoint.toPlace.shift()
++        placeJumpStart = null
++        placeAttempts = 0
++        placeLastAttempt = 0
+         fullStop()
+       }
+ 
+@@ -540,8 +549,25 @@ function inject (bot) {
+       }
+       let canPlace = true
+       if (placingBlock.jump) {
++        // Pillaring up (jump, then place the block below the feet) is timing-sensitive and was
++        // brittle with one fixed moment; spraying placeBlock across the whole arc was WORSE, since
++        // most tries land while the bot is poorly positioned, burn an attempt cap, and thrash
++        // resetPath. The trigger that holds on both vanilla and Paper is to place at the APEX of
++        // the jump: hold jump, and once the bot is high enough to have a clear 1-block gap below
++        // its feet AND its upward velocity has bled off (at / just past the top of the arc), place
++        // once. Throttle so we fire at most once per apex window, and give up only on a wall-clock
++        // timeout — never on an attempt count. Plain (non-jump) placements are untouched: they try
++        // once and reset on a single failure (see the catch below).
+         bot.setControlState('jump', true)
+-        canPlace = placingBlock.y + 1 < bot.entity.position.y
++        if (placeJumpStart === null) placeJumpStart = performance.now()
++        if (performance.now() - placeJumpStart > 4000) {
++          resetPath('place_timeout')
++          return
++        }
++        const highEnough = bot.entity.position.y - placingBlock.y > 1.0
++        const nearApex = bot.entity.velocity.y <= 0.10
++        const throttled = performance.now() - placeLastAttempt < 150
++        canPlace = highEnough && nearApex && !throttled
+       }
+       if (canPlace) {
+         if (!lockEquipItem.tryAcquire()) return
+@@ -550,6 +576,8 @@ function inject (bot) {
+             lockEquipItem.release()
+             const refBlock = bot.blockAt(new Vec3(placingBlock.x, placingBlock.y, placingBlock.z), false)
+             if (!lockPlaceBlock.tryAcquire()) return
++            placeAttempts++ // count an actual attempt (locks held, so no double-counting)
++            placeLastAttempt = performance.now()
+             if (interactableBlocks.includes(refBlock.name)) {
+               bot.setControlState('sneak', true)
+             }
+@@ -558,13 +586,15 @@ function inject (bot) {
+                 // Dont release Sneak if the block placement was not successful
+                 bot.setControlState('sneak', false)
+                 if (bot.pathfinder.LOSWhenPlacingBlocks && placingBlock.returnPos) returningPos = placingBlock.returnPos.clone()
++                placing = false // placed -> move on to the next node
+               })
+               .catch(_ignoreError => {
+-                resetPath('place_error')
++                // Pillar-up keeps retrying across its window (bounded above); a plain horizontal
++                // placement gives up on the first failure, exactly as before.
++                if (!placingBlock.jump) resetPath('place_error')
+               })
+               .then(() => {
+                 lockPlaceBlock.release()
+-                placing = false
+                 lastNodeTime = performance.now()
+               })
+           })

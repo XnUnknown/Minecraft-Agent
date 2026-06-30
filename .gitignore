@@ -8,9 +8,18 @@ Minecraft Agent Server/
 Minecraft Agent Servers/
 *.jar
 
+# Runtime debug dump of the latest LLM context (regenerated every turn)
+data/context-dump.md
+
 # Local Claude Code settings
 .claude/settings.local.json
 
 # Portable brain runtime data (keep folder structure, ignore heavy/generated bits)
 brains/*/logs/
 brains/*/memory/vectors/
+
+# Planning / notes docs kept locally but out of version control
+Issues with the Agent.txt
+ARCHITECTURE_PLAN.md
+BUILD_ROADMAP.md
+Technical_Approach.md

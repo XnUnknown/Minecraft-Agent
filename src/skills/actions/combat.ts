@@ -7,7 +7,10 @@ export const attackNearestMob: Skill = {
   def: {
     name: 'attackNearestMob',
     description:
-      'Find and kill the nearest hostile monsters (zombie, skeleton, spider, creeper, etc.). Use for "kill monsters", "fight that mob", or "clear the area".',
+      'Find and kill nearby creatures. Without mobType, only fights ever-hostile monsters ' +
+      '(zombie, skeleton, spider, creeper, etc.) — use for "kill monsters" or "clear the area". ' +
+      'With an explicit mobType (any creature name, e.g. cow, pig, polar_bear, wolf), targets ' +
+      'that creature specifically even if it is not normally hostile.',
     parameters: {
       type: 'object',
       properties: {
@@ -38,7 +41,10 @@ export const attackNearestMob: Skill = {
       ctx.reflex?.setSuppressDefense(false);
     }
 
-    if (killed > 0) return `Defeated ${killed} monster(s).`;
-    return mobType ? `No ${mobType} nearby to fight.` : 'No monsters nearby to fight.';
+    if (killed > 0) return { ok: true, message: `Defeated ${killed} monster(s).` };
+    return {
+      ok: false,
+      message: mobType ? `No ${mobType} nearby to fight.` : 'No monsters nearby to fight.',
+    };
   },
 };

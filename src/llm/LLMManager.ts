@@ -46,6 +46,10 @@ export class LLMManager {
     return this.config.roles[role]?.temperature;
   }
 
+  maxTokens(role: Role): number | undefined {
+    return this.config.roles[role]?.maxTokens;
+  }
+
   describe(role: Role): string {
     const r = this.config.roles[role];
     if (!r) return `${role}: <unset>`;

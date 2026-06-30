@@ -10,7 +10,13 @@ export interface CombatEntity {
   position?: { distanceTo(o: unknown): number };
 }
 
-/** Nearest hostile entity within `range`, optionally filtered by (substring) name. */
+/**
+ * Nearest fightable entity within `range`. With no `nameFilter`, only ever-hostile mobs
+ * count (self-defense default). With an explicit `nameFilter` (a player-named target like
+ * "polar_bear" or "cow"), any creature matching that name is eligible regardless of our
+ * coarse hostile/neutral/passive classification — the player asked for it by name, so trust
+ * the live entity registry over our own threat tags.
+ */
 export function nearestHostile(bot: Bot, range: number, nameFilter?: string): CombatEntity | null {
   const me = bot.entity?.position;
   if (!me) return null;
@@ -19,8 +25,13 @@ export function nearestHostile(bot: Bot, range: number, nameFilter?: string): Co
   let bestDist = Infinity;
   for (const e of Object.values(bot.entities) as unknown as CombatEntity[]) {
     if (!e || !e.position || e.isValid === false) continue;
-    if (classifyEntity(e) !== 'hostile') continue;
-    if (nameFilter && !(e.name ?? '').toLowerCase().includes(nameFilter)) continue;
+    const kind = classifyEntity(e);
+    if (kind === 'player' || kind === 'object') continue;
+    if (nameFilter) {
+      if (!(e.name ?? '').toLowerCase().includes(nameFilter)) continue;
+    } else if (kind !== 'hostile') {
+      continue;
+    }
     const d = e.position.distanceTo(me);
     if (d <= range && d < bestDist) {
       best = e;

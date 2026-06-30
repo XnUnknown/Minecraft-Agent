@@ -1,10 +1,70 @@
 import type { Bot } from 'mineflayer';
 import type { Blackboard } from '../blackboard/Blackboard';
-import type { PerceivedEntity, WorldState } from './types';
+import type { PerceivedEntity, WorldState, NearbyBlock } from './types';
 import { classifyEntity } from './classify';
 import { summarizeWorldState } from './summarize';
 import { compassDirection } from '../util/geometry';
 import { logger } from '../util/logger';
+
+/** Common terrain/filler blocks — collapsed into a plain name list instead of itemized. */
+const TERRAIN_FILLER = new Set([
+  'air', 'cave_air', 'void_air', 'stone', 'deepslate', 'dirt', 'grass_block', 'podzol',
+  'sand', 'red_sand', 'sandstone', 'gravel', 'clay', 'water', 'lava', 'bedrock',
+  'andesite', 'granite', 'diorite', 'tuff', 'calcite', 'snow', 'snow_block', 'ice',
+  'short_grass', 'tall_grass', 'grass', 'fern', 'large_fern', 'seagrass', 'kelp', 'mud',
+]);
+
+/**
+ * Scans a radius around the bot for every distinct non-terrain block type (ores, logs,
+ * leaves, crops, structures, ...) so the LLM gets ground truth of exact names actually
+ * present — e.g. "dark_oak_log" — instead of guessing a generic example from a tool's
+ * description. Only called once per LLM planning turn (not on the fast perception tick),
+ * since a 16-block survey is too heavy to run at 300ms cadence.
+ */
+export function surveyNearbyBlocks(bot: Bot, radius = 16): { interesting: NearbyBlock[]; terrain: string[] } {
+  const me = bot.entity?.position;
+  if (!me) return { interesting: [], terrain: [] };
+
+  const positions = bot.findBlocks({
+    point: me,
+    maxDistance: radius,
+    count: 1500,
+    matching: (block: unknown) => {
+      const b = block as { name?: string } | null;
+      return !!b?.name && b.name !== 'air';
+    },
+  });
+
+  const tally = new Map<string, { count: number; nearest: number; pos: { x: number; y: number; z: number } }>();
+  const terrain = new Set<string>();
+
+  for (const pos of positions) {
+    const block = bot.blockAt(pos);
+    if (!block) continue;
+    if (TERRAIN_FILLER.has(block.name)) {
+      terrain.add(block.name);
+      continue;
+    }
+    const d = Math.hypot(pos.x - me.x, pos.y - me.y, pos.z - me.z);
+    const entry = tally.get(block.name);
+    if (entry) {
+      entry.count += 1;
+      if (d < entry.nearest) {
+        entry.nearest = d;
+        entry.pos = pos;
+      }
+    } else {
+      tally.set(block.name, { count: 1, nearest: d, pos });
+    }
+  }
+
+  const interesting = [...tally.entries()]
+    .map(([name, v]) => ({ name, count: v.count, distance: v.nearest, direction: compassDirection(me, v.pos) }))
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, 25);
+
+  return { interesting, terrain: [...terrain] };
+}
 
 export interface PerceptionOptions {
   /** How often to refresh the blackboard snapshot, in ms. */
@@ -128,6 +188,8 @@ export class Perception {
   /** Refresh state and return a compact text observation for the LLM. */
   observe(): string {
     const ws = this.update() ?? this.blackboard.get();
-    return ws ? summarizeWorldState(ws) : 'No world state available yet.';
+    if (!ws) return 'No world state available yet.';
+    const blocks = surveyNearbyBlocks(this.bot, 16);
+    return summarizeWorldState(ws, blocks);
   }
 }

@@ -1,5 +1,5 @@
 import type { Bot } from 'mineflayer';
-import type { Skill, SkillContext } from './types';
+import type { Skill, SkillContext, SkillResult } from './types';
 import type { ToolDef } from '../llm/types';
 import { goToPlayer, goToCoordinates, followPlayer, stopMoving } from './actions/navigation';
 import { reportStatus } from './actions/status';
@@ -7,35 +7,122 @@ import { sayInChat } from './actions/chat';
 import { collectBlock } from './actions/gathering';
 import { attackNearestMob } from './actions/combat';
 import { tossItem } from './actions/inventory';
+import {
+  placeBlock,
+  enterBuildMode,
+  exitBuildMode,
+  buildStatus,
+  inspectArea,
+  fillArea,
+  buildLine,
+} from './actions/building';
+import { craftItem, getRecipe } from './actions/crafting';
+import { wearItem } from './actions/equipment';
+import { tradeWithVillager } from './actions/trading';
+import { searchWide } from './actions/search';
+import { messageAgent } from './actions/messaging';
+import { goToEntity, goToBlock, interactEntity, dismount, useFurnace, useEnchantmentTable } from './actions/interaction';
+import { runCode, saveSkill, loadStoredSkills, buildDynamicSkill } from './actions/code';
 import { logger } from '../util/logger';
 
-/** All registered skills. New capabilities are added here. */
+/**
+ * All registered skills. To add a new capability: write a `Skill` (def + run) in its own
+ * file under `actions/`, import it here, and add it to this list.
+ */
 const SKILLS: Skill[] = [
   goToPlayer,
   goToCoordinates,
+  goToEntity,
+  goToBlock,
   followPlayer,
   stopMoving,
   reportStatus,
   sayInChat,
   collectBlock,
   attackNearestMob,
+  interactEntity,
+  dismount,
   tossItem,
+  placeBlock,
+  craftItem,
+  getRecipe,
+  useFurnace,
+  useEnchantmentTable,
+  wearItem,
+  tradeWithVillager,
+  searchWide,
+  messageAgent,
+  enterBuildMode,
+  exitBuildMode,
 ];
+
+/** Building-mode-only skills — registered always, but advertised to the planner ONLY while build
+ *  mode is on (see toolDefs). Keeps the everyday tool list lean; the agent calls enterBuildMode to
+ *  reveal them. enterBuildMode/exitBuildMode themselves stay in the base set so it can toggle. */
+const BUILD_SKILLS: Skill[] = [buildStatus, inspectArea, fillArea, buildLine];
+const BUILD_SKILL_NAMES = new Set(BUILD_SKILLS.map((s) => s.def.name));
+
+/** Sandbox code-execution skills — only registered when config `skills.codeExecution` is on. */
+const CODE_SKILLS: Skill[] = [runCode, saveSkill];
+
+export interface SkillRegistryOptions {
+  /** Enable the runCode/saveSkill sandbox tools and load saved dynamic skills. Default false. */
+  codeExecution?: boolean;
+}
 
 export class SkillRegistry {
   private map = new Map<string, Skill>();
+  /** Names of skills loaded from data/skills/*.json or registered live via saveSkill —
+   *  tracked separately so goalRunner can tell "ran generated code" apart from a built-in. */
+  private dynamicNames = new Set<string>();
 
-  constructor() {
+  /** True when sandbox code execution is enabled — used to advertise runCode in the prompt. */
+  readonly codeExecution: boolean;
+
+  constructor(opts: SkillRegistryOptions = {}) {
+    this.codeExecution = opts.codeExecution === true;
+
     for (const s of SKILLS) this.map.set(s.def.name, s);
+    for (const s of BUILD_SKILLS) this.map.set(s.def.name, s);
+
+    if (!this.codeExecution) {
+      logger.info('Sandbox code execution disabled — runCode/saveSkill and saved skills are off.');
+      return; // no runCode/saveSkill, and saved dynamic skills (which run in the sandbox) stay off
+    }
+
+    for (const s of CODE_SKILLS) this.map.set(s.def.name, s);
+    for (const stored of loadStoredSkills()) {
+      if (this.map.has(stored.name)) {
+        logger.warn(`Saved skill "${stored.name}" collides with a built-in tool name — skipped.`);
+        continue;
+      }
+      this.map.set(stored.name, buildDynamicSkill(stored));
+      this.dynamicNames.add(stored.name);
+      logger.info(`Loaded saved skill "${stored.name}".`);
+    }
   }
 
-  /** Tool schemas to send to the LLM. */
-  toolDefs(): ToolDef[] {
-    return SKILLS.map((s) => s.def);
+  /** Tool schemas to send to the LLM — includes dynamically loaded/saved skills. Building-only
+   *  tools are withheld unless `buildMode` is on, so the everyday planner isn't cluttered by them. */
+  toolDefs(buildMode = false): ToolDef[] {
+    return [...this.map.values()]
+      .filter((s) => buildMode || !BUILD_SKILL_NAMES.has(s.def.name))
+      .map((s) => s.def);
   }
 
   has(name: string): boolean {
     return this.map.has(name);
+  }
+
+  /** Registers a new skill immediately (used by saveSkill so it's callable this session). */
+  registerDynamic(skill: Skill): void {
+    this.map.set(skill.def.name, skill);
+    this.dynamicNames.add(skill.def.name);
+  }
+
+  /** True for a skill loaded from data/skills/*.json or saved live this session. */
+  isDynamic(name: string): boolean {
+    return this.dynamicNames.has(name);
   }
 
   async execute(
@@ -43,17 +130,17 @@ export class SkillRegistry {
     name: string,
     args: Record<string, unknown>,
     ctx: SkillContext,
-  ): Promise<string> {
+  ): Promise<SkillResult> {
     const skill = this.map.get(name);
-    if (!skill) return `Unknown tool "${name}".`;
+    if (!skill) return { ok: false, message: `Unknown tool "${name}".` };
     try {
-      const result = await skill.run(bot, args, ctx);
-      logger.info(`skill ${name}(${JSON.stringify(args)}) -> ${result}`);
+      const result = await skill.run(bot, args, { ...ctx, registry: this });
+      logger.info(`[tool] ${name}(${JSON.stringify(args)}) -> ${result.ok ? 'OK' : 'FAILED'}: ${result.message}`);
       return result;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      logger.error(`skill ${name} failed: ${msg}`);
-      return `Tool ${name} failed: ${msg}`;
+      logger.error(`[tool] ${name}(${JSON.stringify(args)}) -> FAILED: ${msg}`);
+      return { ok: false, message: `Tool ${name} failed: ${msg}` };
     }
   }
 }

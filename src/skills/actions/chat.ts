@@ -1,4 +1,5 @@
 import type { Skill } from '../types';
+import { sendChat } from '../../util/chat';
 
 export const sayInChat: Skill = {
   def: {
@@ -12,9 +13,9 @@ export const sayInChat: Skill = {
     },
   },
   async run(bot, args) {
-    const message = String(args.message ?? '').slice(0, 256);
-    if (!message) return 'No message to say.';
-    bot.chat(message);
-    return `Said: "${message}"`;
+    const message = String(args.message ?? '').trim();
+    if (!message) return { ok: false, message: 'No message to say.' };
+    sendChat(bot, message);
+    return { ok: true, message: `Said: "${message}"` };
   },
 };

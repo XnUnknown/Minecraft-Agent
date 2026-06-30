@@ -11,6 +11,7 @@ export interface RoleRouting {
   mode?: OllamaMode; // ollama only
   toolCalling?: ToolCalling; // default 'native'
   temperature?: number;
+  maxTokens?: number;
 }
 
 export interface ProvidersConfig {

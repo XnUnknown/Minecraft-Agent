@@ -1,20 +1,17 @@
 import type { ToolDef } from './types';
+import { buildStaticPrompt } from './contextLoader';
 
-/** System prompt for providers using NATIVE tool calling (OpenAI / Claude / gpt-oss). */
-export function buildSystemPrompt(botName: string): string {
-  return [
-    `You are ${botName}, an autonomous agent embodied in a Minecraft world (survival mode).`,
-    `You receive an observation of your surroundings and a message from a player.`,
-    `Decide what to do and call the appropriate tool. Use sayInChat to talk.`,
-    `Rules:`,
-    `- Prefer a concrete tool action over only talking when the player asks you to do something.`,
-    `- Keep chat messages short and friendly.`,
-    `- Only use the tools provided; never invent tools or arguments.`,
-  ].join('\n');
+/** System prompt for providers using NATIVE tool calling (OpenAI / Claude / gpt-oss). The prose
+ *  lives in editable markdown under `context/native/` (loaded once + cached); `codeExecution`
+ *  includes the `*.code.md` sandbox section only when the runCode tool is enabled. */
+export function buildSystemPrompt(botName: string, codeExecution = false): string {
+  return buildStaticPrompt('native', { botName, codeExecution });
 }
 
-/** System prompt for JSON-mode models (no native tool calling, e.g. Gemma). */
-export function buildJsonSystemPrompt(botName: string, tools: ToolDef[]): string {
+/** System prompt for JSON-mode models (no native tool calling, e.g. Gemma). The prose lives in
+ *  editable markdown under `context/json/` (loaded once + cached); the tool catalog is rendered
+ *  from the live `tools` and substituted for the `{{tools}}` placeholder. */
+export function buildJsonSystemPrompt(botName: string, tools: ToolDef[], codeExecution = false): string {
   const catalog = tools
     .map((t) => {
       const props = Object.entries(t.parameters.properties)
@@ -24,43 +21,44 @@ export function buildJsonSystemPrompt(botName: string, tools: ToolDef[]): string
     })
     .join('\n');
 
-  return [
-    `You are ${botName}, an autonomous agent in a Minecraft world (survival mode).`,
-    `You are given an observation and a player's message. Produce an ordered PLAN of tool`,
-    `calls that, run one after another, FULLY accomplish what the player asked — think the`,
-    `whole job through, not just the first step.`,
-    ``,
-    `Available tools:`,
-    catalog,
-    ``,
-    `Planning rules:`,
-    `- The player talking to you is named in 'Player "NAME" says'. Use that exact NAME for`,
-    `  playerName / who to deliver to.`,
-    `- "bring/get/fetch me X" means: gather X, THEN goToPlayer(NAME), THEN tossItem(X). Never`,
-    `  stop after gathering — always return and hand it over.`,
-    `- A request can be several tasks ("get wood and then kill 2 zombies"): include EVERY task`,
-    `  as steps, in the order asked.`,
-    `- "follow me / come with me / stay with me" = followPlayer (keeps following). A one-off`,
-    `  "come here" = goToPlayer.`,
-    `- Pick sensible counts and block names (logs are oak_log/birch_log/etc.).`,
-    ``,
-    `Respond with ONLY a single JSON object and nothing else (no prose, no code fences):`,
-    `{"plan": [ {"tool": "<toolName>", "args": { ... }}, ... ]}`,
-    `Examples (player is "Nish"):`,
-    `- "bring me 10 oak logs and kill the monsters" ->`,
-    `  {"plan":[{"tool":"collectBlock","args":{"blockType":"oak_log","count":10}},` +
-      `{"tool":"goToPlayer","args":{"playerName":"Nish"}},` +
-      `{"tool":"tossItem","args":{"item":"oak_log"}},` +
-      `{"tool":"attackNearestMob","args":{"count":3}}]}`,
-    `- "follow me" -> {"plan":[{"tool":"followPlayer","args":{"playerName":"Nish"}}]}`,
-    `- a plain chat reply -> {"plan":[{"tool":"sayInChat","args":{"message":"..."}}]}`,
-    `Arguments marked with * are required. Do not invent tools or arguments.`,
-  ].join('\n');
+  return buildStaticPrompt('json', { botName, tools: catalog, codeExecution });
 }
 
 export interface PlanStep {
   name: string;
   args: Record<string, unknown>;
+}
+
+/** One executed tool call and its outcome, for recapping a batch to the LLM after a failure. */
+export interface TranscriptEntry {
+  tool: string;
+  args: Record<string, unknown>;
+  ok: boolean;
+  message: string;
+}
+
+/** Formats a transcript as a numbered recap for a replanning turn. */
+export function describeTranscript(transcript: TranscriptEntry[]): string {
+  return transcript
+    .map((t, i) => {
+      const argsStr = Object.keys(t.args).length ? JSON.stringify(t.args) : '{}';
+      return `${i + 1}. ${t.tool}(${argsStr}) -> ${t.ok ? 'OK' : 'FAILED'}: ${t.message}`;
+    })
+    .join('\n');
+}
+
+/**
+ * Strips the {"plan":...} JSON object out of a JSON-mode reply, leaving any prose the model
+ * wrote alongside it. A "done" turn from this model is usually bare JSON with no prose at
+ * all (e.g. `{"plan": []}`) — without this, that literal JSON text gets spoken to the player
+ * verbatim instead of being recognized as "nothing to say here."
+ */
+export function extractJsonProse(text: string): string {
+  const cleaned = text.replace(/```(?:json)?/gi, '').trim();
+  const objText = extractBalanced(cleaned, '{', '}');
+  if (!objText) return cleaned;
+  const idx = cleaned.indexOf(objText);
+  return (cleaned.slice(0, idx) + cleaned.slice(idx + objText.length)).trim();
 }
 
 /** Extracts a {"tool","args"} action from a JSON-mode model's text reply. */

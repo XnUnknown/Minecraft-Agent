@@ -1,10 +1,10 @@
 import type { Bot } from 'mineflayer';
-import baritonePkg from '@miner-org/mineflayer-baritone';
+import pathfinderPkg from 'mineflayer-pathfinder';
 import { logger } from '../util/logger';
 import { nearestHostile, type CombatEntity } from '../util/combat';
 import { equipBestWeapon } from '../util/equip';
 
-const { goals } = baritonePkg;
+const { goals } = pathfinderPkg;
 
 const FOOD_FALLBACK = new Set([
   'bread', 'apple', 'golden_apple', 'enchanted_golden_apple', 'cooked_beef', 'cooked_porkchop',
@@ -37,6 +37,7 @@ export interface ReflexOptions {
 export class ReflexLayer {
   private timer?: ReturnType<typeof setInterval>;
   private suppressDefense = false;
+  private travelMode = false;
   private eating = false;
   private engaging = false;
   private fleeing = false;
@@ -88,6 +89,35 @@ export class ReflexLayer {
   }
 
   /**
+   * Travel mode: while running to a far-off destination we deliberately "lower" the reflex so
+   * mobs can't yank the bot off its path — it ignores creeper-flee and self-defense and just
+   * keeps walking (auto-eat still runs; it's stationary and feeds regen). Long-distance walks
+   * turn this on at the start and OFF again on arrival, so normal survival resumes automatically.
+   * Entering travel drops any fight/flee in progress WITHOUT clearing the goal — the traveller
+   * owns the path.
+   */
+  setTravelMode(on: boolean): void {
+    if (this.travelMode === on) return;
+    this.travelMode = on;
+    if (on) {
+      if (this.engaging) {
+        this.engaging = false;
+        this.currentTargetId = undefined;
+        try {
+          (this.bot as unknown as { pvp: { stop(): void } }).pvp.stop();
+        } catch {
+          /* ignore */
+        }
+      }
+      if (this.fleeing) {
+        this.fleeing = false;
+        this.bot.setControlState('sprint', false);
+      }
+    }
+    logger.info(`Reflex: travel mode ${on ? 'ON — ignoring mobs to stay on course' : 'OFF — full survival resumed'}.`);
+  }
+
+  /**
    * Register what to do when the reflex finishes a flee/defend and releases control of
    * navigation — e.g. resume the active task's path instead of going limp. If unset, the
    * reflex just clears the goal.
@@ -105,10 +135,14 @@ export class ReflexLayer {
     const bot = this.bot;
     if (!bot.entity) return;
 
-    // P0a: keep fed (drives health regen).
+    // P0a: keep fed (drives health regen). Runs even while travelling — eating is stationary.
     if (!this.eating && (bot.food ?? 20) <= this.eatFoodAt && this.hasFood()) {
       void this.eat();
     }
+
+    // Travelling far: skip every path-deviating reaction so a wandering mob can't pull the bot
+    // off its route. setTravelMode(false) on arrival restores the checks below.
+    if (this.travelMode) return;
 
     // P0b: flee nearby creepers — never melee them. Hysteresis: once fleeing, keep going
     // until every creeper is past the safe range so we don't stutter-step away.
@@ -187,11 +221,9 @@ export class ReflexLayer {
     this.fleeing = true;
     this.bot.setControlState('sprint', true);
     try {
-      // Invert a long near so we sprint well clear of the threat.
-      if (from.position) {
-        const away = new goals.GoalInvert(new goals.GoalNear(from.position as any, 20));
-        void this.bot.ashfinder.gotoSmart(away);
-      }
+      // Invert a long follow so we sprint well clear of the threat, not 3-4 blocks.
+      const away = new goals.GoalInvert(new goals.GoalFollow(from as never, 20));
+      this.bot.pathfinder.setGoal(away, true);
     } catch {
       /* ignore */
     }
@@ -201,9 +233,7 @@ export class ReflexLayer {
   private stopFlee(): void {
     if (!this.fleeing) return;
     this.fleeing = false;
-    // Clear ALL movement states, not just sprint — if a flee was interrupted mid-jump
-    // or mid-sprint, any lingering state will fight the next pathfinder goal.
-    this.bot.clearControlStates();
+    this.bot.setControlState('sprint', false);
     this.releaseNav();
   }
 
@@ -222,7 +252,7 @@ export class ReflexLayer {
       }
     }
     try {
-      this.bot.ashfinder.stop();
+      this.bot.pathfinder.setGoal(null);
     } catch {
       /* ignore */
     }

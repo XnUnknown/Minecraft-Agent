@@ -17,3 +17,9 @@ data/context-dump.md
 # Portable brain runtime data (keep folder structure, ignore heavy/generated bits)
 brains/*/logs/
 brains/*/memory/vectors/
+
+# Planning / notes docs kept locally but out of version control
+Issues with the Agent.txt
+ARCHITECTURE_PLAN.md
+BUILD_ROADMAP.md
+Technical_Approach.md

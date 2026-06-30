@@ -25,14 +25,17 @@ and stays alive on its own with a fast, no-LLM survival reflex loop.
 Architecture diagrams (high-level + low-level) live in
 [`docs/diagrams/`](./docs/diagrams/).
 
-## Demo
+## Introduction
+
+A short walkthrough of the agent — what it is and how it works.
 
 <p align="center">
-  <video src="https://github.com/XnUnknown/Minecraft-Agent/raw/master/docs/assets/demo.mp4" controls muted width="720"></video>
+  <a href="https://github.com/XnUnknown/Minecraft-Agent/blob/master/docs/assets/intro.mp4">
+    <img src="docs/assets/intro-poster.png" alt="Watch the introduction video" width="720">
+  </a>
 </p>
 
-▶️ The agent in action. If the player above doesn't load in your browser,
-[open the demo video here](docs/assets/demo.mp4).
+▶️ **[Watch the introduction video](https://github.com/XnUnknown/Minecraft-Agent/blob/master/docs/assets/intro.mp4)** (click the image above to play it on GitHub) — or [download it](docs/assets/intro.mp4).
 
 ---
 

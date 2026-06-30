@@ -114,7 +114,10 @@ export class GoalRunner {
     const vitals = `HP ${Math.round(bot.health ?? 0)}/20, food ${Math.round(bot.food ?? 0)}/20`;
     if (this.current) {
       const waiting = this.pending.length ? `, ${this.pending.length} new message(s) to fold in` : '';
-      return `Working on "${this.current.task.message}" — ${this.current.step}${waiting}. ${where}, ${vitals}.`;
+      // If we're pathing somewhere, lead with that (and how far to go) so "where are you?" mid-trek
+      // gets "still on my way, ~640 blocks out" instead of a stale step label.
+      const step = describeTravel(bot) ?? this.current.step;
+      return `Working on "${this.current.task.message}" — ${step}${waiting}. ${where}, ${vitals}.`;
     }
     if (this.pending.length) return `Picking up your message now. ${where}, ${vitals}.`;
     return `Idle ${where}, ${vitals}. Give me a task whenever.`;
@@ -243,11 +246,10 @@ export class GoalRunner {
           this.current = { task: t, step: 'planning' };
           this.memory.addUser(t.requestedBy, t.message);
         }
-        const latest = incoming[incoming.length - 1];
-        messages.push({
-          role: 'user',
-          content: `Observation:\n${observation}\n\nPlayer "${latest.requestedBy}" says: ${latest.message}`,
-        });
+        // Show EVERY newly-arrived line, not just the last — if the player fired off several
+        // messages they should all reach the model, in order, not be collapsed to the latest.
+        const said = incoming.map((t) => `Player "${t.requestedBy}" says: ${t.message}`).join('\n');
+        messages.push({ role: 'user', content: `Observation:\n${observation}\n\n${said}` });
         if (transcript.length) {
           // The crux: a mid-task line is presented WITH what's already been done, so the model
           // weaves it into the existing plan instead of rewriting the plan from nothing.
@@ -455,8 +457,32 @@ function classifyIntent(message: string): 'stop' | 'status' | 'now' | 'task' {
   if (/\b(stop (what|doing|everything)|drop everything|stop and)\b/.test(m)) return 'stop';
   if (/\b(status|sitrep|report back|what('?s| is| are you| ?cha)?\s*(your status|you doing|going on)|how('?s| is) it going)\b/.test(m))
     return 'status';
+  // Location / progress check-ins ("where are you?", "how far?", "are you there yet?", "you close?").
+  // These must answer instantly WITHOUT halting the task — asking shouldn't stop the bot.
+  if (/\b(where (are|r|ya|u)|how far|how (much )?long|are (you|u|ya) (there|close|here|near)|(you|u|ya) (there|close|near)|almost there|nearly there|reached (it|yet)|got there)\b/.test(m))
+    return 'status';
   if (/\b(right now|do it now|stop and|immediately|drop everything|urgent)\b/.test(m)) return 'now';
   return 'task';
+}
+
+/** Describes an active pathfinding goal ("traveling toward (x,y,z), ~N blocks to go"), or null
+ *  if the bot isn't currently pathing. Reads the live pathfinder goal, so it's LLM-free. */
+function describeTravel(bot: Bot): string | null {
+  const pf = bot.pathfinder as unknown as {
+    isMoving?: () => boolean;
+    goal?: { x?: number; y?: number; z?: number; entity?: unknown } | null;
+  };
+  if (!pf?.isMoving?.()) return null;
+  const g = pf.goal;
+  if (!g) return 'on the move';
+  if (typeof g.x === 'number' && typeof g.y === 'number' && typeof g.z === 'number') {
+    const me = bot.entity?.position;
+    const togo = me ? Math.round(Math.hypot(me.x - g.x, me.y - g.y, me.z - g.z)) : null;
+    const dest = `(${Math.round(g.x)}, ${Math.round(g.y)}, ${Math.round(g.z)})`;
+    return togo !== null ? `traveling toward ${dest}, ~${togo} blocks to go` : `traveling toward ${dest}`;
+  }
+  if (g.entity) return 'traveling toward a moving target';
+  return 'on the move';
 }
 
 /** Loose equality for "is this the same request as last time" checks. */

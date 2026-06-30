@@ -37,6 +37,7 @@ export interface ReflexOptions {
 export class ReflexLayer {
   private timer?: ReturnType<typeof setInterval>;
   private suppressDefense = false;
+  private travelMode = false;
   private eating = false;
   private engaging = false;
   private fleeing = false;
@@ -88,6 +89,35 @@ export class ReflexLayer {
   }
 
   /**
+   * Travel mode: while running to a far-off destination we deliberately "lower" the reflex so
+   * mobs can't yank the bot off its path — it ignores creeper-flee and self-defense and just
+   * keeps walking (auto-eat still runs; it's stationary and feeds regen). Long-distance walks
+   * turn this on at the start and OFF again on arrival, so normal survival resumes automatically.
+   * Entering travel drops any fight/flee in progress WITHOUT clearing the goal — the traveller
+   * owns the path.
+   */
+  setTravelMode(on: boolean): void {
+    if (this.travelMode === on) return;
+    this.travelMode = on;
+    if (on) {
+      if (this.engaging) {
+        this.engaging = false;
+        this.currentTargetId = undefined;
+        try {
+          (this.bot as unknown as { pvp: { stop(): void } }).pvp.stop();
+        } catch {
+          /* ignore */
+        }
+      }
+      if (this.fleeing) {
+        this.fleeing = false;
+        this.bot.setControlState('sprint', false);
+      }
+    }
+    logger.info(`Reflex: travel mode ${on ? 'ON — ignoring mobs to stay on course' : 'OFF — full survival resumed'}.`);
+  }
+
+  /**
    * Register what to do when the reflex finishes a flee/defend and releases control of
    * navigation — e.g. resume the active task's path instead of going limp. If unset, the
    * reflex just clears the goal.
@@ -105,10 +135,14 @@ export class ReflexLayer {
     const bot = this.bot;
     if (!bot.entity) return;
 
-    // P0a: keep fed (drives health regen).
+    // P0a: keep fed (drives health regen). Runs even while travelling — eating is stationary.
     if (!this.eating && (bot.food ?? 20) <= this.eatFoodAt && this.hasFood()) {
       void this.eat();
     }
+
+    // Travelling far: skip every path-deviating reaction so a wandering mob can't pull the bot
+    // off its route. setTravelMode(false) on arrival restores the checks below.
+    if (this.travelMode) return;
 
     // P0b: flee nearby creepers — never melee them. Hysteresis: once fleeing, keep going
     // until every creeper is past the safe range so we don't stutter-step away.

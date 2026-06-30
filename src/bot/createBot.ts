@@ -7,6 +7,7 @@ import { Blackboard } from '../blackboard/Blackboard';
 import { Perception } from '../perception/Perception';
 import { ReflexLayer } from '../reflex/ReflexLayer';
 import { configureMovements, StuckMonitor } from './movement';
+import { installDigGuard } from './digGuard';
 import { recordSent } from '../util/chat';
 
 let warnPatched = false;
@@ -65,6 +66,7 @@ export function createBot(config: AppConfig, profile: AgentProfile, peerUsername
   bot.once('spawn', () => {
     logger.info(`Spawned into the world as "${bot.username}". Position: ${bot.entity.position}`);
     configureMovements(bot);
+    installDigGuard(bot);
     perception.start();
     reflex.start();
     stuckMonitor.start();

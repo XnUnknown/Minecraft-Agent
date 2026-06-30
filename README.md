@@ -1,4 +1,8 @@
-# Minecraft LLM Agent
+<p align="center">
+  <img src="docs/assets/logo.png" alt="Minecraft LLM Agent" width="640">
+</p>
+
+<h1 align="center">Minecraft LLM Agent</h1>
 
 An autonomous, LLM-driven Minecraft agent for **Java Edition**, built on
 [Mineflayer](https://github.com/PrismarineJS/mineflayer). It connects to a server as a
@@ -20,6 +24,15 @@ and stays alive on its own with a fast, no-LLM survival reflex loop.
 
 Architecture diagrams (high-level + low-level) live in
 [`docs/diagrams/`](./docs/diagrams/).
+
+## Demo
+
+<p align="center">
+  <video src="https://github.com/XnUnknown/Minecraft-Agent/raw/master/docs/assets/demo.mp4" controls muted width="720"></video>
+</p>
+
+▶️ The agent in action. If the player above doesn't load in your browser,
+[open the demo video here](docs/assets/demo.mp4).
 
 ---
 

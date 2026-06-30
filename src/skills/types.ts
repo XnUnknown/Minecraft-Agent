@@ -1,6 +1,7 @@
 import type { Bot } from 'mineflayer';
 import type { ToolDef } from '../llm/types';
 import type { ReflexLayer } from '../reflex/ReflexLayer';
+import type { BuildState } from '../building/BuildSession';
 import type { SkillRegistry } from './registry';
 
 /** Context passed to a skill at execution time. */
@@ -21,6 +22,12 @@ export interface SkillContext {
    * newly-saved skills live, without every skill needing it threaded through separately.
    */
   registry?: SkillRegistry;
+  /**
+   * Build-mode state + the live structural memory. Building skills toggle the mode and record
+   * every block they place into `building.session`, so the bot keeps a textual model of what it
+   * has made (it has no vision). Provided by the GoalRunner.
+   */
+  building?: BuildState;
 }
 
 /** Structured outcome of a skill run — lets the executor react to failure, not just guess from prose. */

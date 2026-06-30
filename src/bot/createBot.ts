@@ -70,7 +70,7 @@ export function createBot(config: AppConfig, profile: AgentProfile, peerUsername
     perception.start();
     reflex.start();
     stuckMonitor.start();
-    bot.chat('Agent online. Try: come | stop | pos | status | pov, or just tell me what to do.');
+    bot.chat('Agent online. Try: come | stop | pos | status | pov | build, or just tell me what to do.');
   });
 
   bot.on('kicked', (reason) => logger.warn(`Kicked: ${JSON.stringify(reason)}`));

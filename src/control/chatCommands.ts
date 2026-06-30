@@ -52,7 +52,7 @@ export function registerChatCommands(
   const knownNames = [profile.username, ...peerUsernames];
 
   bot.once('spawn', () => {
-    logger.info('Chat control ready. Manual: come | pos | obs | pov | pov off. stop/status + any other chat -> agent.');
+    logger.info('Chat control ready. Manual: come | pos | obs | pov | pov off | build | build off. stop/status + any other chat -> agent.');
   });
 
   bot.on('chat', (username, message) => {
@@ -69,6 +69,11 @@ export function registerChatCommands(
 
     const text = rest;
     const cmd = text.trim().toLowerCase();
+    // Manual build-mode toggle (the agent can also flip it itself via the build tools).
+    if (cmd === 'build' || cmd === 'build on' || cmd === 'build off') {
+      bot.chat(runner.setBuildMode(cmd !== 'build off', bot));
+      return;
+    }
     if (MANUAL.has(cmd)) {
       void handleManual(bot, username, cmd, perception, profile);
       return;

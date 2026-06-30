@@ -1,6 +1,6 @@
 import type { Bot } from 'mineflayer';
 import { LLMManager } from '../llm/LLMManager';
-import type { LLMProvider, ChatMessage } from '../llm/types';
+import type { LLMProvider, ChatMessage, ToolDef } from '../llm/types';
 import type { Perception } from '../perception/Perception';
 import type { ReflexLayer } from '../reflex/ReflexLayer';
 import { SkillRegistry, type SkillRegistryOptions } from '../skills/registry';
@@ -14,6 +14,7 @@ import {
   type TranscriptEntry,
 } from '../llm/promptBuilder';
 import { ConversationMemory, type ConversationMemoryOptions } from './ConversationMemory';
+import { BuildState } from '../building/BuildSession';
 import { contextBlock as craftingContextBlock } from '../knowledge/CraftingExperience';
 import { contextBlock as agentExperienceContextBlock, recordExperience } from '../knowledge/AgentExperience';
 import { sendChat } from '../util/chat';
@@ -42,6 +43,8 @@ export class GoalRunner {
   private llm = new LLMManager();
   private skills: SkillRegistry;
   private memory: ConversationMemory;
+  /** Build-mode flag + the live structural model, threaded into every skill's context. */
+  private building = new BuildState();
 
   /** New player lines not yet shown to the LLM — folded into the live session at its next turn. */
   private pending: Task[] = [];
@@ -105,6 +108,18 @@ export class GoalRunner {
    *  use this for a direct busy reply instead of silently piling on. */
   isBusy(): boolean {
     return !!this.current;
+  }
+
+  /** Manual build-mode toggle (the `build` / `build off` chat command). The agent can also flip
+   *  this itself via the enterBuildMode/exitBuildMode tools. Returns a short status line. */
+  setBuildMode(on: boolean, bot?: Bot): string {
+    if (on) {
+      this.building.enter('', '');
+      return 'Building mode ON — building tools and structural tracking are available.';
+    }
+    const summary = bot ? this.building.session.summary(bot) : this.building.session.summary();
+    this.building.exit();
+    return `Building mode OFF. ${summary}`;
   }
 
   /** A short, live description of what the bot is doing — answerable mid-task, no LLM. */
@@ -187,29 +202,38 @@ export class GoalRunner {
       return;
     }
 
-    const tools = this.skills.toolDefs();
     const mode = this.llm.toolMode('planner');
     const temperature = this.llm.temperature('planner');
     const maxTokens = this.llm.maxTokens('planner') ?? 2048;
     const codeOn = this.skills.codeExecution;
-    const baseSystem =
-      mode === 'json' ? buildJsonSystemPrompt(bot.username, tools, codeOn) : buildSystemPrompt(bot.username, codeOn);
 
     const ctx = {
       requestedBy: '',
       reflex: this.reflex,
       shouldStop: (): boolean => this.cancel || this.abortStep,
+      building: this.building,
+    };
+
+    // Tools + system prompt are rebuilt every turn (cheap — context files are cached) so a
+    // mid-session enterBuildMode/exitBuildMode reveals or hides the building tools and the live
+    // structural model immediately, and the volatile context blocks stay fresh.
+    const promptFor = (): { system: string; tools: ToolDef[] } => {
+      const build = this.building.enabled;
+      const t = this.skills.toolDefs(build);
+      const base = mode === 'json' ? buildJsonSystemPrompt(bot.username, t, codeOn) : buildSystemPrompt(bot.username, codeOn);
+      const sys = withContext(
+        base,
+        this.memory.summaryText(),
+        craftingContextBlock(),
+        agentExperienceContextBlock(),
+        this.peerUsernames,
+        build ? this.building.session.summary(bot) : '',
+      );
+      return { system: sys, tools: t };
     };
 
     const transcript: TranscriptEntry[] = [];
     let messages: ChatMessage[] = [];
-    let system = withContext(
-      baseSystem,
-      this.memory.summaryText(),
-      craftingContextBlock(),
-      agentExperienceContextBlock(),
-      this.peerUsernames,
-    );
     let assistantRecord = '';
     let budget = 0;
     let lastPlanSig: string | null = null;
@@ -233,13 +257,6 @@ export class GoalRunner {
       if (this.pending.length) {
         const incoming = this.pending.splice(0, this.pending.length);
         const observation = this.perception.observe();
-        system = withContext(
-          baseSystem,
-          this.memory.summaryText(),
-          craftingContextBlock(),
-          agentExperienceContextBlock(),
-          this.peerUsernames,
-        );
         messages = [...this.memory.recent()];
         for (const t of incoming) {
           ctx.requestedBy = t.requestedBy;
@@ -275,6 +292,9 @@ export class GoalRunner {
       budget--;
 
       logger.info(`[loop] planner request (${transcript.length} result(s) so far)`);
+      // Rebuilt each turn so a just-issued enterBuildMode/exitBuildMode and the live structural
+      // model are reflected immediately.
+      const { system, tools } = promptFor();
       // Debug aid: write the exact context the planner is about to see to data/context-dump.md.
       dumpContext({ system, messages, tools, label: `planner (${mode})` });
       const res = await provider.chat({
@@ -496,8 +516,19 @@ function withContext(
   craftingNotes: string,
   agentExperience: string,
   peerUsernames: string[],
+  buildModel: string,
 ): string {
   const parts = [system];
+  if (buildModel) {
+    parts.push(
+      'BUILDING MODE is ON. Build with absolute coordinates: fillArea for floors/walls/roofs/solid ' +
+        'shapes (hollow=true for rooms), buildLine for beams/pillars/edges, placeBlock for single ' +
+        'blocks. You have NO vision — inspectArea reads the real blocks (ground, obstacles, what ' +
+        'landed) and buildStatus reports the structural model below. Plan in layers from the ground ' +
+        'up so each block has support, inspect before and after, and exitBuildMode when finished.\n' +
+        `Current structural model:\n${buildModel}`,
+    );
+  }
   if (peerUsernames.length) {
     parts.push(
       `Other agents online alongside you: ${peerUsernames.join(', ')}. Use messageAgent to ask ` +

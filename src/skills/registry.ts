@@ -7,7 +7,15 @@ import { sayInChat } from './actions/chat';
 import { collectBlock } from './actions/gathering';
 import { attackNearestMob } from './actions/combat';
 import { tossItem } from './actions/inventory';
-import { placeBlock } from './actions/building';
+import {
+  placeBlock,
+  enterBuildMode,
+  exitBuildMode,
+  buildStatus,
+  inspectArea,
+  fillArea,
+  buildLine,
+} from './actions/building';
 import { craftItem, getRecipe } from './actions/crafting';
 import { wearItem } from './actions/equipment';
 import { tradeWithVillager } from './actions/trading';
@@ -44,7 +52,15 @@ const SKILLS: Skill[] = [
   tradeWithVillager,
   searchWide,
   messageAgent,
+  enterBuildMode,
+  exitBuildMode,
 ];
+
+/** Building-mode-only skills — registered always, but advertised to the planner ONLY while build
+ *  mode is on (see toolDefs). Keeps the everyday tool list lean; the agent calls enterBuildMode to
+ *  reveal them. enterBuildMode/exitBuildMode themselves stay in the base set so it can toggle. */
+const BUILD_SKILLS: Skill[] = [buildStatus, inspectArea, fillArea, buildLine];
+const BUILD_SKILL_NAMES = new Set(BUILD_SKILLS.map((s) => s.def.name));
 
 /** Sandbox code-execution skills — only registered when config `skills.codeExecution` is on. */
 const CODE_SKILLS: Skill[] = [runCode, saveSkill];
@@ -67,6 +83,7 @@ export class SkillRegistry {
     this.codeExecution = opts.codeExecution === true;
 
     for (const s of SKILLS) this.map.set(s.def.name, s);
+    for (const s of BUILD_SKILLS) this.map.set(s.def.name, s);
 
     if (!this.codeExecution) {
       logger.info('Sandbox code execution disabled — runCode/saveSkill and saved skills are off.');
@@ -85,9 +102,12 @@ export class SkillRegistry {
     }
   }
 
-  /** Tool schemas to send to the LLM — includes dynamically loaded/saved skills. */
-  toolDefs(): ToolDef[] {
-    return [...this.map.values()].map((s) => s.def);
+  /** Tool schemas to send to the LLM — includes dynamically loaded/saved skills. Building-only
+   *  tools are withheld unless `buildMode` is on, so the everyday planner isn't cluttered by them. */
+  toolDefs(buildMode = false): ToolDef[] {
+    return [...this.map.values()]
+      .filter((s) => buildMode || !BUILD_SKILL_NAMES.has(s.def.name))
+      .map((s) => s.def);
   }
 
   has(name: string): boolean {

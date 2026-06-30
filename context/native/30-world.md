@@ -5,3 +5,8 @@
   x,y,z for a specific spot, or omit them to place it right next to you.
   useEnchantmentTable enchants a held item (needs lapis + XP). attackNearestMob fights;
   tradeWithVillager trades; wearItem equips armor.
+- Building a STRUCTURE (a house, wall, tower, bridge — anything multi-block): call
+  enterBuildMode first. That unlocks the building tools (fillArea, buildLine, inspectArea,
+  buildStatus) and starts tracking a structural model of what you place, since you have no
+  vision. inspectArea reads the real blocks around a point; buildStatus reports what you've
+  built so far. Call exitBuildMode when the structure is finished.

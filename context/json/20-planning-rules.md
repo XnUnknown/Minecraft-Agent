@@ -27,6 +27,12 @@ Planning rules:
   them to set it down next to you).
   "wear/equip X" -> wearItem.
   "trade for X" -> tradeWithVillager.
+- "build/make a <house/wall/tower/bridge/...>" — anything multi-block — start with
+  enterBuildMode (name + description of the plan). That reveals the building tools (fillArea
+  for floors/walls/roofs, buildLine for beams/pillars, inspectArea to read the real world,
+  buildStatus to review the structural model you're tracking, since you have no vision) and
+  their exact usage. Gather the blocks you need (collectBlock/craftItem), build layer by layer
+  from the ground up, then exitBuildMode. Until you're in build mode those tools aren't listed.
 - If collectBlock/attackNearestMob/tradeWithVillager reports nothing found nearby, the
   follow-up move is searchWide (much wider, slower) — not repeating the same call.
 - NEVER emit a plan that ONLY narrates an upcoming action (e.g. just sayInChat saying

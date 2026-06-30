@@ -2,6 +2,8 @@
   "name": "minecraft-agent",
   "version": "0.1.0",
   "description": "Autonomous LLM-driven Minecraft agent (Java Edition).",
+  "license": "MIT",
+  "author": "XnUnknown",
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",

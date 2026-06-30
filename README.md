@@ -257,3 +257,9 @@ npm run dev          # run with auto-restart (nodemon) on src/config/context edi
 npm run typecheck    # TypeScript check, no emit
 npm run start:multi  # one child process per configured agent
 ```
+
+---
+
+## License
+
+Released under the [MIT License](./LICENSE).

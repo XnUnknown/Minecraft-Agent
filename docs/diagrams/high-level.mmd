@@ -1,0 +1,68 @@
+%% High-level architecture — Minecraft LLM Agent
+%% Render: see docs/diagrams/README.md
+flowchart TB
+  classDef ext fill:#1f2937,stroke:#9ca3af,color:#f9fafb;
+  classDef sense fill:#064e3b,stroke:#34d399,color:#ecfdf5;
+  classDef brain fill:#3730a3,stroke:#a5b4fc,color:#eef2ff;
+  classDef act fill:#7c2d12,stroke:#fdba74,color:#fff7ed;
+  classDef mem fill:#4a044e,stroke:#f0abfc,color:#fdf4ff;
+  classDef cfg fill:#374151,stroke:#d1d5db,color:#f9fafb;
+
+  subgraph EXT["External systems"]
+    MC["Minecraft Java Server"]:::ext
+    LLMP["LLM Providers<br/>OpenAI / Claude / Ollama"]:::ext
+  end
+
+  subgraph PROC["Agent process — Node + tsx (one bot per agent profile)"]
+    IDX["index.ts<br/>boot + auto-reconnect"]:::cfg
+    CFG["Config<br/>default.yaml + providers.yaml"]:::cfg
+
+    subgraph BODY["Body"]
+      MF["Mineflayer bot + plugins<br/>pathfinder / pvp / tool / collectblock<br/>+ digGuard"]:::act
+    end
+
+    subgraph SENSE["Sense and survive — no LLM"]
+      PERC["Perception<br/>tiered world snapshots"]:::sense
+      BB["Blackboard<br/>shared WorldState"]:::sense
+      RFX["Reflex Layer<br/>eat / flee / defend<br/>+ travel mode"]:::sense
+    end
+
+    subgraph BRAIN["Cognition — LLM"]
+      CHAT["Chat Router<br/>addressing + manual cmds"]:::brain
+      GR["GoalRunner<br/>single live ReAct session"]:::brain
+      PROMPT["Prompt Builder<br/>contextLoader (context/*.md)"]:::brain
+      LLM["LLMManager<br/>per-role routing"]:::brain
+    end
+
+    subgraph ACTG["Act — skills"]
+      REG["SkillRegistry<br/>tool catalog + execute"]:::act
+      SK["Skills<br/>navigate / gather / craft / combat<br/>build / trade / interact / code"]:::act
+    end
+
+    subgraph KNOW["Knowledge and memory"]
+      CM["ConversationMemory"]:::mem
+      CE["CraftingExperience"]:::mem
+      AE["AgentExperience"]:::mem
+      BLD["BuildSession<br/>structural model"]:::mem
+    end
+  end
+
+  MC <--> MF
+  LLM <--> LLMP
+  CFG --> IDX
+  IDX --> MF
+  CFG --> LLM
+
+  MF --> PERC --> BB --> RFX --> MF
+  MF -->|chat| CHAT --> GR
+  GR <-->|plan / results| LLM
+  GR <--> PROMPT
+  GR --> REG --> SK --> MF
+  SK -.->|suppress / resume| RFX
+  GR <--> CM
+  SK --> BLD
+  BB -.->|observation| GR
+  PROMPT -.->|reads| CE
+  PROMPT -.->|reads| AE
+  PROMPT -.->|reads| BLD
+  PROMPT -.->|reads| CM

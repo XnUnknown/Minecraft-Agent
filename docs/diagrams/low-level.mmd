@@ -1,0 +1,98 @@
+%% Low-level architecture — one chat line through the agent
+%% Render: see docs/diagrams/README.md
+flowchart TB
+  classDef io fill:#0c4a6e,stroke:#7dd3fc,color:#f0f9ff;
+  classDef run fill:#3730a3,stroke:#a5b4fc,color:#eef2ff;
+  classDef skill fill:#7c2d12,stroke:#fdba74,color:#fff7ed;
+  classDef data fill:#4a044e,stroke:#f0abfc,color:#fdf4ff;
+  classDef survive fill:#064e3b,stroke:#34d399,color:#ecfdf5;
+  classDef dec fill:#713f12,stroke:#fde68a,color:#fffbeb;
+
+  IN(["Player chat line"]):::io
+
+  subgraph ROUTER["chatCommands.ts"]
+    PARSE["parseTargets<br/>addressed to me?"]:::run
+    MANUAL{"manual cmd?<br/>come / pos / pov / build"}:::dec
+    MCMD["manual handler<br/>setBuildMode / pov / come"]:::run
+  end
+
+  subgraph GRN["GoalRunner — single live session"]
+    HANDLE["handle()<br/>classifyIntent"]:::run
+    INTENT{"intent"}:::dec
+    STATUS["describeActivity<br/>instant, no LLM<br/>status / where are you / how far"]:::run
+    STOP["stopAll()<br/>cancel + clear inbox"]:::run
+    INBOX["pending inbox"]:::run
+    SESSION["runSession()<br/>ReAct loop, budget 6"]:::run
+    FOLD["fold new lines<br/>+ fresh observation"]:::run
+    PROMPTF["promptFor()<br/>build mode gates tools"]:::run
+    EXECB["execute batch<br/>step by step, stop on fail"]:::run
+    RESOLVE["finishResponse<br/>reply + record + learn"]:::run
+  end
+
+  subgraph PROMPTING["Prompt assembly — every turn"]
+    BASE["contextLoader<br/>cached static base<br/>context/native|json/*.md"]:::data
+    VOL["volatile blocks<br/>summary / crafting exp /<br/>agent exp / peers / build model"]:::data
+    PARSEP["parseJsonPlan<br/>or native toolCalls"]:::run
+  end
+
+  subgraph LLMM["LLMManager"]
+    ROLE["forRole(planner / fast)"]:::run
+    PROV["provider adapter<br/>OpenAI / Claude / Ollama"]:::io
+  end
+
+  subgraph EXEC["SkillRegistry.execute"]
+    CTX["ctx: reflex · shouldStop<br/>building · registry"]:::skill
+    RUN["skill.run(bot, args, ctx)"]:::skill
+  end
+
+  subgraph SKILLSET["Skills — selected"]
+    NAVS["navigation<br/>goToCoordinates / followPlayer"]:::skill
+    GATH["gathering<br/>collectBlock + searchOutward"]:::skill
+    CRAFT["crafting<br/>self-healing resolver"]:::skill
+    BUILDS["building tools<br/>fillArea / buildLine /<br/>inspectArea / buildStatus"]:::skill
+    CODE["code sandbox<br/>runCode / saveSkill"]:::skill
+  end
+
+  subgraph WORLDIO["Bot and world I/O"]
+    NAV["navigate.walkToward<br/>progress watchdog<br/>+ reflex travel mode"]:::survive
+    DIG["digGuard<br/>settle before dig"]:::survive
+    PLACE["util/place.ts<br/>tryPlaceAt / findItem"]:::survive
+    RFXT["ReflexLayer tick 150ms<br/>P0 eat/flee · P1 defend"]:::survive
+    PERCO["Perception.observe<br/>survey + summarize"]:::survive
+    MF2["Mineflayer bot<br/>pathfinder / pvp / collectblock"]:::io
+  end
+
+  subgraph STORES["Knowledge stores"]
+    CMEM["ConversationMemory<br/>recent + rolling summary"]:::data
+    BSESS["BuildState / BuildSession<br/>record · verify · summary"]:::data
+    EXPS["Crafting + Agent experience<br/>data/*.md"]:::data
+  end
+
+  IN --> PARSE --> MANUAL
+  MANUAL -->|yes| MCMD --> MF2
+  MANUAL -->|no| HANDLE --> INTENT
+  INTENT -->|status| STATUS
+  INTENT -->|stop| STOP
+  INTENT -->|task / now| INBOX --> SESSION
+
+  SESSION --> FOLD --> PROMPTF
+  PROMPTF --> BASE --> PARSEP
+  PROMPTF --> VOL --> PARSEP
+  PROMPTF --> ROLE --> PROV --> PARSEP --> EXECB
+  EXECB --> CTX --> RUN
+  RUN --> NAVS --> NAV --> MF2
+  RUN --> GATH --> MF2
+  RUN --> CRAFT --> MF2
+  RUN --> BUILDS --> PLACE --> DIG --> MF2
+  BUILDS --> BSESS
+  RUN --> CODE --> RUN
+
+  RFXT --> MF2
+  PERCO --> FOLD
+  EXECB --> RESOLVE --> SESSION
+  RESOLVE --> CMEM
+  RESOLVE --> EXPS
+  BSESS -.->|injected| VOL
+  EXPS -.->|injected| VOL
+  CMEM -.->|injected| VOL
+  STATUS -.->|reads goal| MF2
